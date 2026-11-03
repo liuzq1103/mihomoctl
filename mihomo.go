@@ -18,25 +18,25 @@ type ProxiesDoc struct {
 }
 
 type ConnMeta struct {
-	Host         string `json:"host"`
-	HostOnly     string `json:"hostOnly"`
-	DstIP        string `json:"destinationIP"`
-	DstPort      string `json:"destinationPort"`
-	Network      string `json:"network"`
-	SourceIP     string `json:"sourceIP"`
-	SourcePort   string `json:"sourcePort"`
-	InboundUser  string `json:"inboundUser"`
+	Host        string `json:"host"`
+	HostOnly    string `json:"hostOnly"`
+	DstIP       string `json:"destinationIP"`
+	DstPort     string `json:"destinationPort"`
+	Network     string `json:"network"`
+	SourceIP    string `json:"sourceIP"`
+	SourcePort  string `json:"sourcePort"`
+	InboundUser string `json:"inboundUser"`
 }
 
 type Conn struct {
-	ID         string    `json:"id"`
-	Start      time.Time `json:"start"`
-	Upload     int64     `json:"upload"`
-	Download   int64     `json:"download"`
-	Chains     []string  `json:"chains"`
-	Rule       string    `json:"rule"`
-	RulePayload string   `json:"rulePayload"`
-	Metadata   ConnMeta  `json:"metadata"`
+	ID          string    `json:"id"`
+	Start       time.Time `json:"start"`
+	Upload      int64     `json:"upload"`
+	Download    int64     `json:"download"`
+	Chains      []string  `json:"chains"`
+	Rule        string    `json:"rule"`
+	RulePayload string    `json:"rulePayload"`
+	Metadata    ConnMeta  `json:"metadata"`
 }
 
 type ConnectionsDoc struct {

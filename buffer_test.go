@@ -70,6 +70,30 @@ func TestTextLimitTruncatesByDisplayWidth(t *testing.T) {
 	}
 }
 
+// Regression: remote content (node names, log payloads) used to reach the
+// terminal raw; a hostile OSC/ANSI sequence could hijack the terminal.
+func TestSetNeutralisesControlRunes(t *testing.T) {
+	s := NewScreen(40, 2)
+	s.Text(0, 0, "a\x1b]52;c;ZWZvdGQ=\x07b", Normal) // OSC 52 clipboard hijack
+	s.Text(0, 1, "\u009bJ", Normal)                  // 8-bit CSI + erase-display 'J'
+	if got := s.cur[1].R; got != 0xfffd {
+		t.Fatalf("ESC must be neutralised, got %q", got)
+	}
+	if got := s.cur[40].R; got != 0xfffd {
+		t.Fatalf("C1 CSI must be neutralised, got %q", got)
+	}
+	plain := s.DumpPlain()
+	if strings.ContainsRune(plain, 0x1b) || strings.ContainsRune(plain, 0x07) {
+		t.Fatalf("control bytes leaked into the frame: %q", plain)
+	}
+	var out bytes.Buffer
+	_ = s.Flush(&out)
+	// Structural escapes are always ESC '[' …; an OSC can only start with ESC ']'.
+	if rendered := out.String(); strings.Contains(rendered, "\x1b]") || strings.Contains(rendered, "\x07") {
+		t.Fatalf("OSC payload must not survive into terminal output: %q", rendered)
+	}
+}
+
 func TestResizeForcesFullRepaint(t *testing.T) {
 	s := NewScreen(10, 2)
 	s.Text(0, 0, "x", Normal)

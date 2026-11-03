@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -53,21 +54,21 @@ type apiMsg struct {
 	kind string
 	err  error
 
-	proxies   *ProxiesDoc
-	conns     *ConnectionsDoc
-	rules     *RulesDoc
-	providers *RuleProvidersDoc
-	pProv     *ProxyProvidersDoc
-	version   *VersionDoc
-	configs   *ConfigsDoc
-	memory    *MemoryDoc
+	proxies       *ProxiesDoc
+	conns         *ConnectionsDoc
+	rules         *RulesDoc
+	providers     *RuleProvidersDoc
+	pProv         *ProxyProvidersDoc
+	version       *VersionDoc
+	configs       *ConfigsDoc
+	memory        *MemoryDoc
 	delayNode     string
 	delayProvider string
 	delayMS       int
-	opName    string
-	text      string
-	traffic   <-chan Traffic
-	logs      <-chan LogLine
+	opName        string
+	text          string
+	traffic       <-chan Traffic
+	logs          <-chan LogLine
 
 	// CLI results carry rendered lines; preview also carries the raw doc.
 	cliKind string
@@ -150,22 +151,28 @@ type App struct {
 	ruleCounts []ruleCount
 	ruleProv   []RuleProvider
 
-	version string
-	mode    string
+	version     string
+	mode        string
 	configsPort int
-	traffic Traffic
-	mem     MemoryDoc
+	traffic     Traffic
+	mem         MemoryDoc
 
 	trafficCh <-chan Traffic
 	logCh     <-chan LogLine
 	streamCtx context.Context
 	cancelAll context.CancelFunc
 
-	pending *pendingAction
-	input   *inputState
-	cmdOpen bool
-	cmdline string
-	notice  string
+	// Reconnect backoff for dropped streams (controller restart, suspend):
+	// a closed stream nils its channel in Run, onTick reopens it after this
+	// cooldown so a down controller is not hammered.
+	trafficRetryAt time.Time
+	logsRetryAt    time.Time
+
+	pending  *pendingAction
+	input    *inputState
+	cmdOpen  bool
+	cmdline  string
+	notice   string
 	noticeAt time.Time
 
 	// Subscription flow: source selection, policy, current preview.
@@ -240,18 +247,36 @@ func (app *App) refresh(page string) {
 		app.post("configs", func() apiMsg { c, err := app.src.Configs(); return apiMsg{kind: "configs", err: err, configs: &c} })
 		app.post("memory", func() apiMsg { m, err := app.src.Memory(); return apiMsg{kind: "memory", err: err, memory: &m} })
 		app.post("proxies", func() apiMsg { p, err := app.src.Proxies(); return apiMsg{kind: "proxies", err: err, proxies: &p} })
-		app.post("connections", func() apiMsg { c, err := app.src.Connections(); return apiMsg{kind: "connections", err: err, conns: &c} })
+		app.post("connections", func() apiMsg {
+			c, err := app.src.Connections()
+			return apiMsg{kind: "connections", err: err, conns: &c}
+		})
 	case pageProxies:
 		app.post("proxies", func() apiMsg { p, err := app.src.Proxies(); return apiMsg{kind: "proxies", err: err, proxies: &p} })
-		app.post("proxy-providers", func() apiMsg { p, err := app.src.ProxyProviders(); return apiMsg{kind: "proxy-providers", err: err, pProv: &p} })
+		app.post("proxy-providers", func() apiMsg {
+			p, err := app.src.ProxyProviders()
+			return apiMsg{kind: "proxy-providers", err: err, pProv: &p}
+		})
 	case pageConnections:
-		app.post("connections", func() apiMsg { c, err := app.src.Connections(); return apiMsg{kind: "connections", err: err, conns: &c} })
+		app.post("connections", func() apiMsg {
+			c, err := app.src.Connections()
+			return apiMsg{kind: "connections", err: err, conns: &c}
+		})
 	case pageRules:
 		app.post("rules", func() apiMsg { r, err := app.src.Rules(); return apiMsg{kind: "rules", err: err, rules: &r} })
-		app.post("providers", func() apiMsg { p, err := app.src.RuleProviders(); return apiMsg{kind: "providers", err: err, providers: &p} })
+		app.post("providers", func() apiMsg {
+			p, err := app.src.RuleProviders()
+			return apiMsg{kind: "providers", err: err, providers: &p}
+		})
 	case pageProviders:
-		app.post("proxy-providers", func() apiMsg { p, err := app.src.ProxyProviders(); return apiMsg{kind: "proxy-providers", err: err, pProv: &p} })
-		app.post("providers", func() apiMsg { p, err := app.src.RuleProviders(); return apiMsg{kind: "providers", err: err, providers: &p} })
+		app.post("proxy-providers", func() apiMsg {
+			p, err := app.src.ProxyProviders()
+			return apiMsg{kind: "proxy-providers", err: err, pProv: &p}
+		})
+		app.post("providers", func() apiMsg {
+			p, err := app.src.RuleProviders()
+			return apiMsg{kind: "providers", err: err, providers: &p}
+		})
 	case pageLogs:
 		if app.logCh == nil {
 			app.post("logs-open", func() apiMsg {
@@ -301,9 +326,15 @@ func (app *App) Run() error {
 			if ok {
 				app.traffic = tr
 				app.dirty = true
+			} else {
+				// Stream ended (closed channel stays ready forever in select);
+				// nil it to stop a busy-spin and let onTick reconnect.
+				app.trafficCh = nil
 			}
 		case line, ok := <-app.logCh:
-			if ok && !app.logPaused {
+			if !ok {
+				app.logCh = nil
+			} else if !app.logPaused {
 				app.logs = append(app.logs, line)
 				if len(app.logs) > 1000 {
 					app.logs = app.logs[len(app.logs)-1000:]
@@ -337,6 +368,16 @@ func (app *App) onTick() {
 		app.notice = ""
 		app.dirty = true
 	}
+	// Reopen dropped streams with a cooldown; inflight dedupe in post()
+	// keeps a slow attempt from piling up.
+	if app.trafficCh == nil && now.After(app.trafficRetryAt) {
+		app.trafficRetryAt = now.Add(5 * time.Second)
+		app.openTraffic()
+	}
+	if app.page == pageLogs && app.logCh == nil && now.After(app.logsRetryAt) {
+		app.logsRetryAt = now.Add(5 * time.Second)
+		app.refresh(pageLogs)
+	}
 }
 
 func kindFor(page string) string {
@@ -368,6 +409,9 @@ func (app *App) onAPI(msg apiMsg) {
 		if strings.HasPrefix(msg.kind, "cli:") {
 			app.lastTitle, app.lastResult = msg.cliKind, []string{"操作未完成：" + msg.err.Error()}
 			app.setNotice(msg.cliKind + " 失败：" + truncByWidth(msg.err.Error(), 80))
+		}
+		if msg.kind == "cli:subscription-apply" {
+			app.subBusy = false // a failed apply must not strand the page in "saving…"
 		}
 		if strings.HasPrefix(msg.kind, "delay:") {
 			delete(app.testing, nodeKey(msg.delayNode, msg.delayProvider))
@@ -872,6 +916,8 @@ func (app *App) scroll(delta int) {
 	switch app.page {
 	case pageLogs:
 		app.logOff = clamp(app.logOff-delta*step, 0, maxInt(0, len(app.logs)-1))
+	case pageConnections:
+		app.connOff = clamp(app.connOff+delta*step, 0, maxInt(0, len(app.conns)-1))
 	case pageDiagnostics:
 		app.diagOff = clamp(app.diagOff+delta*step, 0, maxInt(0, len(app.diagRows)))
 	case pageRuntime:
@@ -892,6 +938,16 @@ func clamp(v, low, high int) int {
 		return high
 	}
 	return v
+}
+
+// dropLastRune removes the final rune, not the final byte, so backspace never
+// splits a multi-byte character into invalid UTF-8.
+func dropLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
 }
 
 func (app *App) onEnter() {
@@ -928,9 +984,7 @@ func (app *App) onInputKey(k Key) {
 			current.submit(app, value)
 		}
 	case KeyBackspace:
-		if app.input.value != "" {
-			app.input.value = app.input.value[:len(app.input.value)-1]
-		}
+		app.input.value = dropLastRune(app.input.value)
 	case KeyRune:
 		app.input.value += string(k.Rune)
 	}
@@ -944,10 +998,8 @@ func (app *App) onFilterKey(k Key) {
 		app.filtering = false
 		app.rebuildNodes()
 	case KeyBackspace:
-		if app.filter != "" {
-			app.filter = app.filter[:len(app.filter)-1]
-			app.rebuildNodes()
-		}
+		app.filter = dropLastRune(app.filter)
+		app.rebuildNodes()
 	case KeyRune:
 		app.filter += string(k.Rune)
 		app.rebuildNodes()
@@ -962,9 +1014,7 @@ func (app *App) onCmdKey(k Key) {
 		app.cmdOpen = false
 		app.executeCommand(app.cmdline)
 	case KeyBackspace:
-		if app.cmdline != "" {
-			app.cmdline = app.cmdline[:len(app.cmdline)-1]
-		}
+		app.cmdline = dropLastRune(app.cmdline)
 	case KeyRune:
 		app.cmdline += string(k.Rune)
 	}
@@ -1088,7 +1138,9 @@ func (app *App) executeCommand(line string) {
 			return
 		}
 		app.post("cli:"+line, func() apiMsg {
-			msg := app.runCLI("cli:"+line, line, nil, line)
+			// Pass the command as separate argv elements; handing the whole
+			// line over as one argument breaks every multi-word verb.
+			msg := app.runCLI("cli:"+line, verb, fields[1:], line)
 			msg.userCmd = true
 			return msg
 		})

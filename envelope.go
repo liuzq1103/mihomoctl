@@ -176,10 +176,10 @@ func (c *demoCli) Run(args ...string) (Envelope, error) {
 	case strings.HasPrefix(joined, "env show"):
 		base.Command = "env-show"
 		base.Data = map[string]any{
-			"HTTP_PROXY": "http://REDACTED:REDACTED@127.0.0.1:7890",
+			"HTTP_PROXY":  "http://REDACTED:REDACTED@127.0.0.1:7890",
 			"HTTPS_PROXY": "http://REDACTED:REDACTED@127.0.0.1:7890",
-			"ALL_PROXY": "socks5://REDACTED:REDACTED@127.0.0.1:7891",
-			"NO_PROXY": "localhost,127.0.0.1",
+			"ALL_PROXY":   "socks5://REDACTED:REDACTED@127.0.0.1:7891",
+			"NO_PROXY":    "localhost,127.0.0.1",
 		}
 	case strings.HasPrefix(joined, "version"):
 		base.Command = "version"

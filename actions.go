@@ -24,8 +24,17 @@ func (app *App) runLifecycleCLI(verb string) apiMsg {
 	if err != nil {
 		return apiMsg{kind: "op", opName: verb, err: err}
 	}
-	text := strings.Join(envelopeLines(env)[1:4], " · ")
-	return apiMsg{kind: "op", opName: verb, text: text}
+	// Envelope length varies with the verb's output; slicing [1:4] unguarded
+	// panics on short envelopes (which would kill the whole TUI).
+	lines := envelopeLines(env)
+	if len(lines) > 4 {
+		lines = lines[1:4]
+	} else if len(lines) > 1 {
+		lines = lines[1:]
+	} else {
+		lines = nil
+	}
+	return apiMsg{kind: "op", opName: verb, text: strings.Join(lines, " · ")}
 }
 
 // loadProfile fills the 接入 page: profiles, bindings and the redacted proxy
@@ -394,4 +403,3 @@ func (app *App) showChain() {
 		run: func(app *App) {},
 	}
 }
-

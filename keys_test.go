@@ -4,10 +4,10 @@ import "testing"
 
 func TestDecodeArrowsAndRunes(t *testing.T) {
 	cases := []struct {
-		in     string
-		want   KeyType
-		rune_  rune
-		used   int
+		in    string
+		want  KeyType
+		rune_ rune
+		used  int
 	}{
 		{"\x1b[A", KeyUp, 0, 3},
 		{"\x1b[B", KeyDown, 0, 3},
@@ -43,5 +43,25 @@ func TestDecodeAltPrefixActsAsEsc(t *testing.T) {
 	key, used := Decode([]byte("\x1bx"))
 	if key.Type != KeyEsc || used != 1 {
 		t.Fatalf("alt-prefixed input should decode as Esc consuming 1 byte, got %v used %d", key.Type, used)
+	}
+}
+
+// Regression: a multibyte rune split across read boundaries used to lose its
+// lead byte, garbling pasted CJK text.
+func TestDecodeWaitsForTruncatedMultibyte(t *testing.T) {
+	cjk := []byte("香") // E9 A6 99, three bytes
+	if _, used := Decode(cjk[:1]); used != 0 {
+		t.Fatal("one lead byte must report zero consumed bytes (wait for more)")
+	}
+	if _, used := Decode(cjk[:2]); used != 0 {
+		t.Fatal("two of three bytes must report zero consumed bytes (wait for more)")
+	}
+	key, used := Decode(cjk)
+	if key.Type != KeyRune || key.Rune != '香' || used != 3 {
+		t.Fatalf("complete rune must decode, got %v/%d used %d", key.Type, key.Rune, used)
+	}
+	// A genuinely invalid sequence is still dropped one byte at a time.
+	if _, used := Decode([]byte{0xc3, 'x'}); used != 1 {
+		t.Fatal("broken continuation must drop exactly one byte")
 	}
 }

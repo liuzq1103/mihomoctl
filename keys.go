@@ -124,6 +124,9 @@ func Decode(buf []byte) (Key, int) {
 	}
 	r, size := utf8.DecodeRune(buf)
 	if r == utf8.RuneError && size <= 1 {
+		if !utf8.FullRune(buf) {
+			return Key{}, 0 // truncated multibyte rune; wait for continuation bytes
+		}
 		return Key{}, 1 // broken UTF-8; drop one byte
 	}
 	return Key{Type: KeyRune, Rune: r}, size

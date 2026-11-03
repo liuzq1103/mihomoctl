@@ -131,9 +131,9 @@ func readJournal(unit string, since, until string, lines int) ([]string, error) 
 			continue
 		}
 		var row struct {
-			PRIORITY   string `json:"PRIORITY"`
-			TIMESTAMP  string `json:"__REALTIME_TIMESTAMP"`
-			MESSAGE    string `json:"MESSAGE"`
+			PRIORITY  string `json:"PRIORITY"`
+			TIMESTAMP string `json:"__REALTIME_TIMESTAMP"`
+			MESSAGE   string `json:"MESSAGE"`
 		}
 		if json.Unmarshal([]byte(line), &row) != nil {
 			continue

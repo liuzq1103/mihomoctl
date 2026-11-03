@@ -102,6 +102,13 @@ func (s *Screen) Set(x, y int, r rune, st Style) {
 	if x < 0 || y < 0 || x >= s.W || y >= s.H {
 		return
 	}
+	// Remote content (node names, log payloads, CLI envelopes) is rendered
+	// through this choke point; control bytes must never reach the terminal
+	// raw, or a hostile name/log line could inject ANSI/OSC sequences.
+	// r == 0 is the internal double-width continuation marker, not content.
+	if r != 0 && (r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)) {
+		r = 0xfffd
+	}
 	s.cur[y*s.W+x] = Cell{r, st}
 }
 

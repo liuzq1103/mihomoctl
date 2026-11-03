@@ -225,7 +225,9 @@ func streamLines[T any](a *apiSource, ctx context.Context, path string) (<-chan 
 		defer close(out)
 		defer resp.Body.Close()
 		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
+		// 1 MiB cap: a single oversized log line must not silently kill the
+		// stream (the default 64 KiB would end the scan with an error).
+		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" {
@@ -266,7 +268,7 @@ func (a *apiSource) DNS(name, record string) (DNSAnswer, error) {
 // the shell may carry, and bounds the payload like the Python downloader.
 func (a *apiSource) Download(rawURL string) ([]byte, error) {
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout:   15 * time.Second,
 		Transport: &http.Transport{Proxy: nil},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 3 {
@@ -371,12 +373,12 @@ func (d *demoSource) synthConn(i int) Conn {
 		down *= 4
 	}
 	return Conn{
-		ID:     fmt.Sprintf("demo-%04d", i),
-		Start:  time.Now().Add(-time.Duration(i) * time.Minute),
-		Upload: int64(i * 65536),
+		ID:       fmt.Sprintf("demo-%04d", i),
+		Start:    time.Now().Add(-time.Duration(i) * time.Minute),
+		Upload:   int64(i * 65536),
 		Download: down,
 		Chains:   chain,
-		Rule:    []string{"OpenAI", "Claude", "GeoSite:cn", "Match"}[i%4],
+		Rule:     []string{"OpenAI", "Claude", "GeoSite:cn", "Match"}[i%4],
 		Metadata: ConnMeta{
 			Host: hosts[i%len(hosts)], Network: []string{"tcp", "udp"}[i%2],
 			DstIP: "203.0.113." + strconv.Itoa(i%250+1), DstPort: "443",
@@ -412,9 +414,9 @@ func (d *demoSource) Rules() (RulesDoc, error) {
 	kinds := []string{"DOMAIN-SUFFIX", "IP-CIDR", "GEOIP", "PROCESS-NAME", "MATCH"}
 	for i := 0; i < 40; i++ {
 		rules = append(rules, Rule{
-			Type: kinds[i%len(kinds)],
+			Type:    kinds[i%len(kinds)],
 			Payload: fmt.Sprintf("example-%02d.com/%d", i%20, i),
-			Proxy: []string{"PROXY", "DIRECT", "REJECT"}[i%3],
+			Proxy:   []string{"PROXY", "DIRECT", "REJECT"}[i%3],
 		})
 	}
 	return RulesDoc{Rules: rules}, nil

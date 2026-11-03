@@ -33,7 +33,7 @@ func TestClearingWarnings(t *testing.T) {
 func TestEnvelopeLinesRendersChecksAndErrors(t *testing.T) {
 	env := Envelope{
 		Command: "health", Scope: "user", Overall: "UNVERIFIED",
-		Data: map[string]any{"overall": "UNVERIFIED"},
+		Data:   map[string]any{"overall": "UNVERIFIED"},
 		Checks: []Check{{Name: "runtime", Status: "PASS", Evidence: "confirmed", Detail: "pid 1"}},
 		Errors: []ErrDoc{{Code: "some-failure", Detail: "safe detail"}},
 	}
