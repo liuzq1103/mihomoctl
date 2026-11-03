@@ -1,0 +1,11 @@
+# Build outputs
+mihomoctl-tui
+*.exe
+dist/
+
+# Go test/bench artifacts
+*.test
+*.out
+
+# Local Go toolchain caches if placed here
+.gocache/
