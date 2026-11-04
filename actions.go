@@ -22,7 +22,7 @@ func (app *App) runCLI(kind string, verb string, args []string, display string) 
 func (app *App) runLifecycleCLI(verb string) apiMsg {
 	env, err := app.cli.Run(verb)
 	if err != nil {
-		return apiMsg{kind: "op", opName: verb, err: err}
+		return apiMsg{kind: "op:" + verb, opName: verb, err: err}
 	}
 	// Envelope length varies with the verb's output; slicing [1:4] unguarded
 	// panics on short envelopes (which would kill the whole TUI).
@@ -34,7 +34,7 @@ func (app *App) runLifecycleCLI(verb string) apiMsg {
 	} else {
 		lines = nil
 	}
-	return apiMsg{kind: "op", opName: verb, text: strings.Join(lines, " · ")}
+	return apiMsg{kind: "op:" + verb, opName: verb, text: strings.Join(lines, " · ")}
 }
 
 // loadProfile fills the 接入 page: profiles, bindings and the redacted proxy
@@ -210,6 +210,7 @@ func (app *App) subscriptionPreview(kind, value string) {
 	app.subKind = kind
 	app.subPreview = nil
 	app.setNotice("正在生成预览…")
+	policy := app.subPolicy // snapshot: the goroutine must not race 'p'
 	app.post("cli:subscription-preview", func() apiMsg {
 		var env Envelope
 		var err error
@@ -217,14 +218,14 @@ func (app *App) subscriptionPreview(kind, value string) {
 			var raw []byte
 			raw, err = app.src.Download(value)
 			if err != nil {
-				return apiMsg{kind: "cli:subscription-preview", err: err}
+				return apiMsg{kind: "cli:subscription-preview", cliKind: "subscription-preview", err: err}
 			}
-			env, err = app.cli.RunWithStdin(raw, "subscription", "preview", "--stdin", "--policy", app.subPolicy)
+			env, err = app.cli.RunWithStdin(raw, "subscription", "preview", "--stdin", "--policy", policy)
 		} else {
-			env, err = app.cli.Run("subscription", "preview", "--source-file", value, "--policy", app.subPolicy)
+			env, err = app.cli.Run("subscription", "preview", "--source-file", value, "--policy", policy)
 		}
 		if err != nil {
-			return apiMsg{kind: "cli:subscription-preview", err: err}
+			return apiMsg{kind: "cli:subscription-preview", cliKind: "subscription-preview", err: err}
 		}
 		if env.Overall == "PASS" && env.Data != nil {
 			return apiMsg{kind: "cli:subscription-preview", cliKind: "subscription-preview",
@@ -253,7 +254,7 @@ func (app *App) askApplySubscription() {
 			app.post("cli:subscription-apply", func() apiMsg {
 				env, err := app.cli.Run("subscription", "apply", identifier, "--sha256", digest)
 				if err != nil {
-					return apiMsg{kind: "cli:subscription-apply", err: err}
+					return apiMsg{kind: "cli:subscription-apply", cliKind: "subscription-apply", err: err}
 				}
 				return apiMsg{kind: "cli:subscription-apply", cliKind: "subscription-apply",
 					lines: envelopeLines(env), applyOK: env.Overall == "PASS"}
@@ -296,8 +297,8 @@ func (app *App) askRefreshProviderNamed(name string) {
 	app.pending = &pendingAction{
 		text: "下载/刷新提供商 " + name + "？（y 确认 / n 取消）",
 		run: func(app *App) {
-			app.post("op", func() apiMsg {
-				return apiMsg{kind: "op", opName: "provider " + name, err: app.src.RefreshProvider(name)}
+			app.post("op:provider "+name, func() apiMsg {
+				return apiMsg{kind: "op:provider " + name, opName: "provider " + name, err: app.src.RefreshProvider(name)}
 			})
 		},
 	}
@@ -327,7 +328,7 @@ func (app *App) runJournal(since, until string) {
 	app.post("cli:journal", func() apiMsg {
 		rows, err := readJournal("mihomo", since, until, 200)
 		if err != nil {
-			return apiMsg{kind: "cli:journal", err: err}
+			return apiMsg{kind: "cli:journal", cliKind: "journal", err: err}
 		}
 		return apiMsg{kind: "cli:journal", cliKind: "journal", lines: rows, userCmd: true}
 	})
@@ -355,10 +356,11 @@ func (app *App) diagnoseURL(target string) {
 }
 
 func (app *App) diagnoseProcess(pid string) {
+	port := app.listenerPort() // snapshot: the goroutine must not race onAPI
 	app.post("cli:diagnose-process", func() apiMsg {
-		rows, err := inspectProcess(pid, app.listenerPort())
+		rows, err := inspectProcess(pid, port)
 		if err != nil {
-			return apiMsg{kind: "cli:diagnose-process", err: err}
+			return apiMsg{kind: "cli:diagnose-process", cliKind: "diagnose process", err: err}
 		}
 		return apiMsg{kind: "cli:diagnose-process", cliKind: "diagnose process", lines: rows, userCmd: true}
 	})

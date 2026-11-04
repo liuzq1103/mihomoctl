@@ -56,6 +56,23 @@ func newRealCli(binary string) CliSource {
 	return &realCli{binary: binary}
 }
 
+// limitWriter bounds how much a child process can buffer into memory: past
+// max it errors (which kills the child), instead of growing the buffer for
+// the whole run and checking the size only after exit.
+type limitWriter struct {
+	buf       *bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func (w *limitWriter) Write(p []byte) (int, error) {
+	if w.buf.Len()+len(p) > w.max {
+		w.truncated = true
+		return 0, errors.New("mihomoctl-output-too-large")
+	}
+	return w.buf.Write(p)
+}
+
 func (c *realCli) run(stdin []byte, args ...string) (Envelope, error) {
 	path, err := exec.LookPath(c.binary)
 	if err != nil {
@@ -66,9 +83,11 @@ func (c *realCli) run(stdin []byte, args ...string) (Envelope, error) {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
 	cmd.Env = append(os.Environ(), "MIHOMOCTL_NO_UPDATE_CHECK=1")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	var stdoutBuf, stderrBuf bytes.Buffer
+	stdout := &limitWriter{buf: &stdoutBuf, max: 16 << 20}
+	stderr := &limitWriter{buf: &stderrBuf, max: 1 << 20}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
 		return Envelope{}, fmt.Errorf("mihomoctl-start-failed")
@@ -78,8 +97,11 @@ func (c *realCli) run(stdin []byte, args ...string) (Envelope, error) {
 	defer timer.Stop()
 	select {
 	case err := <-done:
-		if err != nil && stdout.Len() == 0 {
-			text := strings.TrimSpace(stderr.String())
+		if stdout.truncated || stderr.truncated {
+			return Envelope{}, fmt.Errorf("mihomoctl-response-too-large")
+		}
+		if err != nil && stdoutBuf.Len() == 0 {
+			text := strings.TrimSpace(stderrBuf.String())
 			if len(text) > 300 {
 				text = text[:300]
 			}
@@ -90,10 +112,7 @@ func (c *realCli) run(stdin []byte, args ...string) (Envelope, error) {
 		return Envelope{}, fmt.Errorf("mihomoctl-timeout")
 	}
 	var env Envelope
-	raw := stdout.Bytes()
-	if len(raw) > 16<<20 {
-		return Envelope{}, fmt.Errorf("mihomoctl-response-too-large")
-	}
+	raw := stdoutBuf.Bytes()
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return Envelope{}, fmt.Errorf("mihomoctl-response-invalid")
 	}

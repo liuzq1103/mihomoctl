@@ -60,6 +60,10 @@ func newAPISource(cfg CtlConfig) *apiSource {
 		MaxIdleConns:        8,
 		MaxIdleConnsPerHost: 8,
 		IdleConnTimeout:     90 * time.Second,
+		// Bounds how long opening a stream may hang (a wedged controller
+		// would otherwise park the open attempt forever and block reconnect);
+		// body reads stay unbounded, as streaming requires.
+		ResponseHeaderTimeout: 10 * time.Second,
 	}
 	return &apiSource{
 		base:  "http://127.0.0.1:" + strconv.Itoa(cfg.Port),
@@ -205,8 +209,9 @@ func (a *apiSource) SetMode(mode string) error {
 
 // streamLines reads one newline-delimited JSON stream until the context ends.
 // Backpressure is the channel: a slow UI drops nothing, the kernel buffer and
-// the read loop pace themselves.
-func streamLines[T any](a *apiSource, ctx context.Context, path string) (<-chan T, error) {
+// the read loop pace themselves. mkErr, when non-nil, renders a scanner
+// failure as one stream item so the break is visible instead of silent.
+func streamLines[T any](a *apiSource, ctx context.Context, path string, mkErr func(error) T) (<-chan T, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", a.base+path, nil)
 	if err != nil {
 		return nil, err
@@ -241,6 +246,14 @@ func streamLines[T any](a *apiSource, ctx context.Context, path string) (<-chan 
 			case out <- value:
 			case <-ctx.Done():
 				return
+			}
+		}
+		// Scanner failures (oversized line, mid-stream read error) surface as
+		// a visible item; the app then reconnects with backoff.
+		if err := scanner.Err(); err != nil && ctx.Err() == nil && mkErr != nil {
+			select {
+			case out <- mkErr(err):
+			case <-ctx.Done():
 			}
 		}
 	}()
@@ -293,11 +306,13 @@ func (a *apiSource) Download(rawURL string) ([]byte, error) {
 }
 
 func (a *apiSource) StartTraffic(ctx context.Context) (<-chan Traffic, error) {
-	return streamLines[Traffic](a, ctx, "/traffic")
+	return streamLines[Traffic](a, ctx, "/traffic", nil)
 }
 
 func (a *apiSource) StartLogs(ctx context.Context) (<-chan LogLine, error) {
-	return streamLines[LogLine](a, ctx, "/logs?level=info")
+	return streamLines[LogLine](a, ctx, "/logs?level=info", func(err error) LogLine {
+		return LogLine{Type: "error", Payload: "日志流读取中断：" + err.Error()}
+	})
 }
 
 // demoSource synthesizes a plausible controller so the console can be felt

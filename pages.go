@@ -66,7 +66,7 @@ func (app *App) drawNoticeRow() {
 			pageSubscriptions: "u 输入 URL | f 选择文件 | p 切换策略 | y 保存并启动",
 			pageConnections:   "/ 过滤 | PgUp/PgDn 滚动",
 			pageLogs:          "p 暂停 | / 过滤 | PgUp/PgDn 滚动",
-			pageRules:         ": rules-check / rules-status 检查 | / 过滤",
+			pageRules:         ": rules-check / rules-status 检查",
 			pageProfile:       "只读视图；导出请在 Shell 运行 env export / integration export",
 			pageProviders:     "Enter 刷新光标项 | : provider NAME",
 			pageDiagnostics:   "h health | d doctor | j journal | u diagnose url | PgUp/PgDn 滚动",

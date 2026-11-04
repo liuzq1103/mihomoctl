@@ -73,3 +73,28 @@ func TestDropLastRune(t *testing.T) {
 		t.Fatal("dropLastRune must never split a multi-byte rune")
 	}
 }
+
+// Regression: every fetch used to share the dedupe key "op", so a confirmed
+// start/stop/restart could be silently swallowed by any other in-flight op.
+func TestOpsDedupeIndependently(t *testing.T) {
+	app := NewApp(newDemoSource(), &stubCli{env: Envelope{Overall: "PASS"}}, 80, 24, pageOverview, true)
+	app.post("op:stop", func() apiMsg { return apiMsg{kind: "op:stop", opName: "stop"} })
+	app.post("op:provider x", func() apiMsg { return apiMsg{kind: "op:provider x", opName: "provider x"} })
+	for i := 0; i < 2; i++ {
+		app.onAPI(<-app.apiCh)
+	}
+	if app.inflight["op:stop"] || app.inflight["op:provider x"] {
+		t.Fatal("each op must clear its own inflight key on completion")
+	}
+}
+
+// Regression: the runtime page posted under key "cli:status" but returned
+// kind "status", so inflight was never cleared and the page never refetched.
+func TestRuntimeRefreshClearsInflight(t *testing.T) {
+	app := NewApp(newDemoSource(), &stubCli{env: Envelope{Overall: "PASS"}}, 80, 24, pageRuntime, true)
+	app.refresh(pageRuntime)
+	app.onAPI(<-app.apiCh)
+	if app.inflight["cli:status"] {
+		t.Fatal("runtime status fetch must clear its dedupe key, or the page never refetches")
+	}
+}

@@ -167,6 +167,9 @@ type App struct {
 	// cooldown so a down controller is not hammered.
 	trafficRetryAt time.Time
 	logsRetryAt    time.Time
+	// logsOpened gates global log-stream reconnect to sessions that ever
+	// opened the stream (visiting the logs page).
+	logsOpened bool
 
 	pending  *pendingAction
 	input    *inputState
@@ -285,7 +288,7 @@ func (app *App) refresh(page string) {
 			})
 		}
 	case pageRuntime:
-		app.post("cli:status", func() apiMsg { return app.runCLI("status", "status", nil, "status") })
+		app.post("cli:status", func() apiMsg { return app.runCLI("cli:status", "status", nil, "status") })
 	case pageProfile:
 		app.post("cli:profile", func() apiMsg { return app.loadProfile() })
 	}
@@ -374,7 +377,9 @@ func (app *App) onTick() {
 		app.trafficRetryAt = now.Add(5 * time.Second)
 		app.openTraffic()
 	}
-	if app.page == pageLogs && app.logCh == nil && now.After(app.logsRetryAt) {
+	// Logs reconnect globally once the stream has been opened at all: the
+	// 1000-line ring keeps receiving while the user is on other pages.
+	if app.logsOpened && app.logCh == nil && now.After(app.logsRetryAt) {
 		app.logsRetryAt = now.Add(5 * time.Second)
 		app.refresh(pageLogs)
 	}
@@ -410,6 +415,9 @@ func (app *App) onAPI(msg apiMsg) {
 			app.lastTitle, app.lastResult = msg.cliKind, []string{"操作未完成：" + msg.err.Error()}
 			app.setNotice(msg.cliKind + " 失败：" + truncByWidth(msg.err.Error(), 80))
 		}
+		if strings.HasPrefix(msg.kind, "op") {
+			app.setNotice(msg.opName + " 失败：" + truncByWidth(msg.err.Error(), 80))
+		}
 		if msg.kind == "cli:subscription-apply" {
 			app.subBusy = false // a failed apply must not strand the page in "saving…"
 		}
@@ -420,6 +428,17 @@ func (app *App) onAPI(msg apiMsg) {
 		return
 	}
 	delete(app.errs, msg.kind)
+	// Operator actions announce completion and refresh the page. Each op
+	// carries its own key (op:start, op:mode x, op:provider n) so one slow op
+	// can never swallow a different, user-confirmed one.
+	if msg.kind == "op" || strings.HasPrefix(msg.kind, "op:") {
+		if msg.text != "" {
+			app.setNotice(msg.opName + " 完成：" + msg.text)
+		} else {
+			app.setNotice(msg.opName + " 完成")
+		}
+		app.refresh(app.page)
+	}
 	switch msg.kind {
 	case "proxies":
 		if msg.proxies != nil {
@@ -500,14 +519,8 @@ func (app *App) onAPI(msg apiMsg) {
 	case "logs-open":
 		if msg.logs != nil {
 			app.logCh = msg.logs
+			app.logsOpened = true
 		}
-	case "op":
-		if msg.text != "" {
-			app.setNotice(msg.opName + " 完成：" + msg.text)
-		} else {
-			app.setNotice(msg.opName + " 完成")
-		}
-		app.refresh(app.page)
 	case "select":
 		app.refresh(pageProxies)
 		app.refresh(pageOverview)
@@ -641,6 +654,9 @@ func (app *App) changePage(page string) {
 	}
 	app.page = page
 	app.connOff, app.logOff, app.diagOff, app.rtOff = 0, 0, 0, 0
+	// A filter is page-scoped intent; never let a stale one silently hide
+	// content on the next page (there is no always-visible filter indicator).
+	app.filter, app.filtering = "", false
 	app.refresh(page)
 	if page == pageOverview {
 		app.openTraffic()
@@ -724,7 +740,8 @@ func (app *App) onKey(k Key) {
 	case 'q':
 		app.quit = true
 	case 'r':
-		app.inflight = map[string]bool{}
+		// No inflight wipe: post() already dedupes, and clearing the map
+		// mid-flight lets a second stream open strand the first's goroutine.
 		app.refresh(app.page)
 		if app.page != pageOverview {
 			app.refresh(pageOverview)
@@ -739,7 +756,10 @@ func (app *App) onKey(k Key) {
 			app.changePage(pageOrder[index])
 		}
 	case '/':
-		if app.page != pageOverview && app.page != pageRuntime {
+		// Only pages that actually consume the filter open filter mode;
+		// elsewhere '/' would be a dead editing state.
+		switch app.page {
+		case pageProxies, pageConnections, pageLogs:
 			app.filtering = true
 		}
 	case ':':
@@ -907,20 +927,25 @@ func (app *App) runtimeMaxScroll() int {
 	return maxInt(0, len(app.runtimeDoc)-(app.scr.H-5))
 }
 
-// scroll moves the long documents: logs page by logOff, diagnostics by diagOff.
+// scroll moves the long documents; each page's step is its own viewport size
+// so paging never skips rows, and max offsets keep the last row reachable.
 func (app *App) scroll(delta int) {
-	step := app.scr.H - 5
-	if step < 1 {
-		step = 1
-	}
 	switch app.page {
 	case pageLogs:
+		// drawLogs windows `contentRows` height rows ending at len-logOff.
+		step := maxInt(1, app.scr.H-4)
 		app.logOff = clamp(app.logOff-delta*step, 0, maxInt(0, len(app.logs)-1))
 	case pageConnections:
+		// Table body is contentRows height minus the header row.
+		step := maxInt(1, app.scr.H-5)
 		app.connOff = clamp(app.connOff+delta*step, 0, maxInt(0, len(app.conns)-1))
 	case pageDiagnostics:
-		app.diagOff = clamp(app.diagOff+delta*step, 0, maxInt(0, len(app.diagRows)))
+		// Viewport is contentRows height minus title/header/legend rows;
+		// offset == len would render zero rows, so cap at len-1.
+		step := maxInt(1, app.scr.H-8)
+		app.diagOff = clamp(app.diagOff+delta*step, 0, maxInt(0, len(app.diagRows)-1))
 	case pageRuntime:
+		step := maxInt(1, app.scr.H-5)
 		app.rtOff = clamp(app.rtOff+delta*step, 0, app.runtimeMaxScroll())
 	case pageSubscriptions:
 		// no scrolling; the preview fits the page by design
@@ -991,17 +1016,23 @@ func (app *App) onInputKey(k Key) {
 }
 
 func (app *App) onFilterKey(k Key) {
+	// Any filter edit re-anchors scrolling: the previous offset can point
+	// past the newly filtered row set and blank the whole page.
+	resetScroll := func() { app.connOff, app.logOff = 0, 0 }
 	switch k.Type {
 	case KeyEsc:
 		app.filtering = false
 	case KeyEnter:
 		app.filtering = false
+		resetScroll()
 		app.rebuildNodes()
 	case KeyBackspace:
 		app.filter = dropLastRune(app.filter)
+		resetScroll()
 		app.rebuildNodes()
 	case KeyRune:
 		app.filter += string(k.Rune)
+		resetScroll()
 		app.rebuildNodes()
 	}
 }
@@ -1156,8 +1187,8 @@ func (app *App) cmdMode(rest []string) {
 	app.pending = &pendingAction{
 		text: "切换核心运行模式为 " + mode + "？（y 确认 / n 取消；不写入配置文件）",
 		run: func(app *App) {
-			app.post("op", func() apiMsg {
-				return apiMsg{kind: "op", opName: "mode " + mode, err: app.src.SetMode(mode)}
+			app.post("op:mode "+mode, func() apiMsg {
+				return apiMsg{kind: "op:mode " + mode, opName: "mode " + mode, err: app.src.SetMode(mode)}
 			})
 		},
 	}
@@ -1168,7 +1199,7 @@ func (app *App) cmdLifecycle(verb string) {
 		text: "确认" + map[string]string{"start": "启动", "stop": "停止", "restart": "重启"}[verb] +
 			"当前用户的代理服务？（y 确认 / n 取消）",
 		run: func(app *App) {
-			app.post("op", func() apiMsg {
+			app.post("op:"+verb, func() apiMsg {
 				return app.runLifecycleCLI(verb)
 			})
 		},
@@ -1188,7 +1219,7 @@ func (app *App) cmdDNS(rest []string) {
 	app.post("cli:dns", func() apiMsg {
 		answer, err := app.src.DNS(name, record)
 		if err != nil {
-			return apiMsg{kind: "cli:dns", err: err}
+			return apiMsg{kind: "cli:dns", cliKind: "dns", err: err}
 		}
 		rows := []string{"查询 " + name + " · 记录 " + record + " · 系统 DNS 不受影响"}
 		for _, row := range answer.Answer {
@@ -1197,7 +1228,7 @@ func (app *App) cmdDNS(rest []string) {
 		if len(rows) == 1 {
 			rows = append(rows, "  无应答")
 		}
-		return apiMsg{kind: "cli:dns", cliKind: "dns", lines: rows}
+		return apiMsg{kind: "cli:dns", cliKind: "dns", lines: rows, userCmd: true}
 	})
 	app.setNotice("正在查询 DNS…")
 }
