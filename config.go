@@ -2,11 +2,12 @@ package main
 
 import (
 	"fmt"
+	"github.com/liuzq1103/mihomoctl/internal/platform"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 )
 
 // CtlConfig mirrors what controller_config.endpoint validates in the Python
@@ -17,6 +18,7 @@ type CtlConfig struct {
 	Port  int
 	Token string
 	Path  string
+	Host  string
 }
 
 var (
@@ -33,41 +35,19 @@ func defaultConfigPath() string {
 			base = "."
 		}
 	}
-	return filepath.Join(base, "mihomo", "config.yaml")
+	return filepath.Join(base, "mihomoctl-go", "config.yaml")
 }
 
 func discoverCtl(path string) (CtlConfig, error) {
 	if path == "" {
 		path = defaultConfigPath()
 	}
-	raw, err := os.ReadFile(path)
+	doc, err := platform.ReadYAML(path, true)
 	if err != nil {
-		return CtlConfig{}, fmt.Errorf("config-missing")
+		return CtlConfig{}, err
 	}
 	cfg := CtlConfig{Path: path}
-	address, token := "", ""
-	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		// Top level only: nested keys are indented.
-		if line[0] == ' ' || line[0] == '\t' {
-			continue
-		}
-		key, value, found := strings.Cut(trimmed, ":")
-		if !found {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
-		switch key {
-		case "external-controller":
-			address = value
-		case "secret":
-			token = value
-		}
-	}
+	address, token := platform.String(doc["external-controller"]), platform.String(doc["secret"])
 	match := addrPattern.FindStringSubmatch(address)
 	if match == nil {
 		return CtlConfig{}, fmt.Errorf("controller-not-configured-as-loopback")
@@ -80,5 +60,6 @@ func discoverCtl(path string) (CtlConfig, error) {
 		return CtlConfig{}, fmt.Errorf("controller-secret-must-be-32-to-256-url-safe-characters")
 	}
 	cfg.Port, cfg.Token = port, token
+	cfg.Host, _, _ = net.SplitHostPort(address)
 	return cfg, nil
 }

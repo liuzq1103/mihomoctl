@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"os/exec"
+	"github.com/liuzq1103/mihomoctl/internal/command"
+	"github.com/liuzq1103/mihomoctl/internal/platform"
+	"github.com/liuzq1103/mihomoctl/internal/routing"
+	"github.com/liuzq1103/mihomoctl/internal/runtimecore"
+	"io"
 	"strings"
 	"time"
 )
@@ -36,8 +39,7 @@ type ErrDoc struct {
 	Remediation string `json:"remediation"`
 }
 
-// CliSource runs the audited Python CLI. Mutations with transactional
-// guarantees (subscription apply, init, health-check save) must stay here.
+// CliSource invokes the shared Go application service for transactional operations.
 type CliSource interface {
 	Run(args ...string) (Envelope, error)
 	// RunWithStdin pipes private content (subscription payloads) instead of
@@ -45,16 +47,11 @@ type CliSource interface {
 	RunWithStdin(input []byte, args ...string) (Envelope, error)
 }
 
-type realCli struct {
-	binary string
-}
+type realCli struct{ system bool }
 
-func newRealCli(binary string) CliSource {
-	if binary == "" {
-		binary = "mihomoctl"
-	}
-	return &realCli{binary: binary}
-}
+// newRealCli now returns an in-process Go service. The legacy binary argument
+// is accepted for source compatibility but never executes another program.
+func newRealCli(binary string) CliSource { return &realCli{} }
 
 // limitWriter bounds how much a child process can buffer into memory: past
 // max it errors (which kills the child), instead of growing the buffer for
@@ -84,57 +81,106 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 }
 
 func (c *realCli) run(stdin []byte, args ...string) (Envelope, error) {
-	path, err := exec.LookPath(c.binary)
+	p, err := command.Parse(args, bytes.NewReader(stdin), io.Discard, io.Discard)
 	if err != nil {
-		return Envelope{}, fmt.Errorf("mihomoctl-not-on-path")
+		return bridgeEnvelope(platform.Failure("mihomoctl", scopeName(c.system), err))
 	}
-	cmd := exec.Command(path, append([]string{"--json"}, args...)...)
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
-	}
-	cmd.Env = append(os.Environ(), "MIHOMOCTL_NO_UPDATE_CHECK=1")
-	var stdoutBuf, stderrBuf bytes.Buffer
-	stdout := &limitWriter{buf: &stdoutBuf, max: 16 << 20}
-	stderr := &limitWriter{buf: &stderrBuf, max: 1 << 20, soft: true}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	done := make(chan error, 1)
-	if err := cmd.Start(); err != nil {
-		return Envelope{}, fmt.Errorf("mihomoctl-start-failed")
-	}
-	go func() { done <- cmd.Wait() }()
-	timer := time.NewTimer(120 * time.Second)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		if stdout.truncated {
-			return Envelope{}, fmt.Errorf("mihomoctl-response-too-large")
-		}
-		if err != nil && stdoutBuf.Len() == 0 {
-			text := strings.TrimSpace(stderrBuf.String())
-			if len(text) > 300 {
-				text = text[:300]
-			}
-			if stderr.truncated {
-				text += " …（stderr 超过 1 MiB 已截断）"
-			}
-			return Envelope{}, errors.New(text)
-		}
-	case <-timer.C:
-		_ = cmd.Process.Kill()
-		return Envelope{}, fmt.Errorf("mihomoctl-timeout")
-	}
-	var env Envelope
-	raw := stdoutBuf.Bytes()
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return Envelope{}, fmt.Errorf("mihomoctl-response-invalid")
-	}
-	return env, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	return bridgeEnvelope(command.Execute(ctx, c.system, p.Request))
 }
-
+func scopeName(system bool) string {
+	if system {
+		return "system"
+	}
+	return "user"
+}
+func bridgeEnvelope(env platform.Envelope) (Envelope, error) {
+	if legacy, ok := env.Data["legacy"].(map[string]any); ok {
+		env.Data = legacy
+		delete(env.Data, "schema")
+		delete(env.Data, "command")
+		delete(env.Data, "overall")
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return Envelope{}, err
+	}
+	var result Envelope
+	err = json.Unmarshal(raw, &result)
+	return result, err
+}
 func (c *realCli) Run(args ...string) (Envelope, error) { return c.run(nil, args...) }
 func (c *realCli) RunWithStdin(input []byte, args ...string) (Envelope, error) {
 	return c.run(input, args...)
+}
+
+func (c *realCli) SubscriptionInput(value, kind, policy string) (Envelope, error) {
+	s, err := platform.NewScope(c.system)
+	if err != nil {
+		return Envelope{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	env, err := routing.SubscriptionInput(ctx, platform.App{Scope: s}, value, kind, policy)
+	if err != nil {
+		return bridgeEnvelope(platform.Failure("subscription", s.Name, err))
+	}
+	return bridgeEnvelope(env)
+}
+func (c *realCli) SubscriptionDiscard(id string) (Envelope, error) {
+	s, err := platform.NewScope(c.system)
+	if err != nil {
+		return Envelope{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	env, err := routing.SubscriptionDiscard(ctx, platform.App{Scope: s}, id)
+	if err != nil {
+		return bridgeEnvelope(platform.Failure("subscription", s.Name, err))
+	}
+	return bridgeEnvelope(env)
+}
+
+func (c *realCli) RuntimeOwnerProof() (bool, string) {
+	s, err := platform.NewScope(c.system)
+	if err != nil {
+		return false, platform.SafeError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err = routing.VerifyController(ctx, platform.App{Scope: s})
+	if err != nil {
+		return false, routing.ErrorCode(err)
+	}
+	return true, ""
+}
+
+func (c *realCli) SubscriptionSaveAndStart(id, sha string) (Envelope, error) {
+	s, e := platform.NewScope(c.system)
+	if e != nil {
+		return Envelope{}, e
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	env, e := routing.SubscriptionSaveAndStart(ctx, platform.App{Scope: s}, id, sha)
+	if e != nil {
+		return bridgeEnvelope(platform.Failure("subscription", s.Name, e))
+	}
+	return bridgeEnvelope(env)
+}
+func (c *realCli) Journal(since, until string, lines int) (Envelope, error) {
+	s, e := platform.NewScope(c.system)
+	if e != nil {
+		return Envelope{}, e
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	env, e := runtimecore.Journal(ctx, platform.App{Scope: s}, since, until, lines)
+	if e != nil {
+		return bridgeEnvelope(platform.Failure("journal", s.Name, e))
+	}
+	return bridgeEnvelope(env)
 }
 
 // demoCli answers with canned envelopes so the whole UI (including the
@@ -191,7 +237,7 @@ func (c *demoCli) Run(args ...string) (Envelope, error) {
 			{Name: "core-binary", Status: "PASS", Evidence: "confirmed", Detail: "/home/demo/.local/bin/mihomo"},
 			{Name: "runtime", Status: "PASS", Evidence: "confirmed", Detail: "running=True"},
 			{Name: "dependency-systemctl", Status: "SKIPPED", Evidence: "unavailable"},
-			{Name: "dependency-python3", Status: "PASS", Evidence: "confirmed"},
+			{Name: "dependency-go-binary", Status: "PASS", Evidence: "confirmed"},
 		}
 		base.Data = map[string]any{"scope": "user", "backend": "process"}
 	case strings.HasPrefix(joined, "profiles") || strings.HasPrefix(joined, "profile list"):
@@ -215,7 +261,7 @@ func (c *demoCli) Run(args ...string) (Envelope, error) {
 		}
 	case strings.HasPrefix(joined, "version"):
 		base.Command = "version"
-		base.Data = map[string]any{"mihomoctl": "1.4.2", "schema": "mihomoctl/v1", "core": "v1.19.10"}
+		base.Data = map[string]any{"mihomoctl": platform.Version, "schema": "mihomoctl/v1", "core": "v1.19.10"}
 	case strings.HasPrefix(joined, "release check"):
 		base.Command = "release-check"
 		base.Data = map[string]any{"current": "1.4.2", "latest": "1.4.2", "up_to_date": true}

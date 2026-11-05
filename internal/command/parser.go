@@ -1,0 +1,286 @@
+// Package command owns the public grammar shared by the CLI and in-process TUI.
+package command
+
+import (
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+
+	"github.com/liuzq1103/mihomoctl/internal/platform"
+)
+
+//go:embed spec.json
+var specification []byte
+
+type Option struct {
+	Name     string   `json:"name"`
+	Flags    []string `json:"flags"`
+	Required bool     `json:"required"`
+	Nargs    any      `json:"nargs"`
+	Choices  []string `json:"choices"`
+	Type     string   `json:"type"`
+	Help     string   `json:"help"`
+	Repeat   bool     `json:"repeat"`
+}
+type Exclusive struct {
+	Required bool     `json:"required"`
+	Names    []string `json:"names"`
+}
+type Spec struct {
+	Command     []string    `json:"command"`
+	Options     []Option    `json:"options"`
+	Args        []Option    `json:"args"`
+	Exclusive   []Exclusive `json:"exclusive"`
+	Description string      `json:"description"`
+}
+
+func Specs() []Spec {
+	var specs []Spec
+	if e := json.Unmarshal(specification, &specs); e != nil {
+		panic("invalid embedded CLI grammar")
+	}
+	return specs
+}
+func key(o Option) string {
+	for _, f := range o.Flags {
+		if strings.HasPrefix(f, "--") {
+			return strings.TrimPrefix(f, "--")
+		}
+	}
+	return o.Name
+}
+
+type Parsed struct {
+	Request      platform.Request
+	System, JSON bool
+	Help         string
+}
+
+func Parse(argv []string, input io.Reader, output, stderr io.Writer) (Parsed, error) {
+	p := Parsed{Request: platform.Request{Options: map[string][]string{}, Input: input, Output: output, Stderr: stderr}}
+	args := append([]string(nil), argv...)
+	for i, v := range args {
+		if v == "--" {
+			p.Request.Child = append([]string{}, args[i+1:]...)
+			args = args[:i]
+			break
+		}
+	}
+	cleaned := []string{}
+	for _, v := range args {
+		if v == "--json" {
+			p.JSON = true
+		} else {
+			cleaned = append(cleaned, v)
+		}
+	}
+	args = cleaned
+	p.Request.JSON = p.JSON
+	scope := ""
+	for len(args) > 0 && (args[0] == "--system" || args[0] == "--user") {
+		v := args[0]
+		if scope != "" && scope != v {
+			return p, platform.Usage("scope-flags-exclusive")
+		}
+		scope = v
+		p.System = v == "--system"
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		if p.JSON {
+			return p, platform.Usage("usage-error")
+		}
+		p.Help = Help(nil)
+		return p, nil
+	}
+	if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		p.Help = Help(args[1:])
+		return p, nil
+	}
+	for _, retired := range []string{"paseo", "codex", "opencode", "diagnose", "ready"} {
+		if args[0] == retired {
+			p.Request.Command = []string{retired}
+			return p, platform.Usage("command-retired")
+		}
+	}
+	if args[0] == "health" && len(args) > 1 && args[1] == "check" {
+		args = append([]string{"health"}, args[2:]...)
+	}
+	if args[0] == "integration" && (len(args) == 1 || strings.HasPrefix(args[1], "-")) {
+		args = append([]string{"integration", "list"}, args[1:]...)
+	}
+	var selected *Spec
+	known := false
+	specs := Specs()
+	for i := range specs {
+		s := &specs[i]
+		if s.Command[0] != args[0] {
+			continue
+		}
+		known = true
+		if len(args) >= len(s.Command) {
+			match := true
+			for j, w := range s.Command {
+				if args[j] != w {
+					match = false
+				}
+			}
+			if match {
+				selected = s
+				break
+			}
+		}
+	}
+	if selected == nil {
+		if known {
+			p.Request.Command = []string{args[0]}
+			for _, v := range args[1:] {
+				if v == "--help" || v == "-h" {
+					p.Help = Help([]string{args[0]})
+					return p, nil
+				}
+			}
+			return p, platform.Usage("usage-error")
+		}
+		return p, platform.Usage("unknown-command")
+	}
+	p.Request.Command = selected.Command
+	args = args[len(selected.Command):]
+	flags := map[string]Option{}
+	for _, o := range selected.Options {
+		for _, f := range o.Flags {
+			flags[f] = o
+		}
+	}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--help" || arg == "-h" {
+			p.Help = Help(selected.Command)
+			return p, nil
+		}
+		if strings.HasPrefix(arg, "-") {
+			f, v, inline := strings.Cut(arg, "=")
+			o, ok := flags[f]
+			if !ok {
+				switch f {
+				case "--python", "--wheelhouse", "--extras", "--no-extras":
+					return p, platform.Usage("python-packaging-not-supported")
+				}
+				return p, platform.Usage("usage-error")
+			}
+			k := key(o)
+			if o.Type == "bool" {
+				if inline {
+					return p, platform.Usage("usage-error")
+				}
+				v = "true"
+			} else if !inline {
+				i++
+				if i >= len(args) {
+					return p, platform.Usage("usage-error")
+				}
+				v = args[i]
+			}
+			if e := validate(o, v); e != nil {
+				return p, e
+			}
+			p.Request.Options[k] = append(p.Request.Options[k], v)
+		} else {
+			p.Request.Args = append(p.Request.Args, arg)
+		}
+	}
+	for _, o := range selected.Options {
+		if o.Required && !p.Request.Has(key(o)) {
+			return p, platform.Usage("usage-error")
+		}
+	}
+	if len(p.Request.Args) > len(selected.Args) {
+		return p, platform.Usage("usage-error")
+	}
+	for i, o := range selected.Args {
+		if i >= len(p.Request.Args) {
+			if o.Nargs != "?" && o.Nargs != "*" {
+				return p, platform.Usage("usage-error")
+			}
+		} else if e := validate(o, p.Request.Args[i]); e != nil {
+			return p, e
+		}
+	}
+	for _, g := range selected.Exclusive {
+		n := 0
+		for _, dest := range g.Names {
+			for _, o := range selected.Options {
+				if o.Name == dest && p.Request.Has(key(o)) {
+					n++
+				}
+			}
+		}
+		if n > 1 || (n == 0 && g.Required) {
+			return p, platform.Usage("usage-error")
+		}
+	}
+	if p.Request.Has("profile") && p.Request.Has("binding") {
+		return p, platform.Usage("profile-binding-exclusive")
+	}
+	if len(p.Request.Child) > 0 && selected.Command[0] != "exec" && selected.Command[0] != "direct" {
+		return p, platform.Usage("usage-error")
+	}
+	if (selected.Command[0] == "exec" || selected.Command[0] == "direct") && len(p.Request.Child) == 0 {
+		return p, platform.Usage("command-required")
+	}
+	if p.Request.Has("python") || p.Request.Has("wheelhouse") || p.Request.Has("extras") || p.Request.Has("no-extras") {
+		return p, platform.Usage("python-packaging-not-supported")
+	}
+	return p, nil
+}
+func validate(o Option, v string) error {
+	if o.Type == "int" {
+		if _, e := strconv.Atoi(v); e != nil {
+			return platform.Usage("usage-error")
+		}
+	}
+	if len(o.Choices) > 0 {
+		for _, c := range o.Choices {
+			if c == v {
+				return nil
+			}
+		}
+		return platform.Usage("usage-error")
+	}
+	if strings.IndexByte(v, 0) >= 0 {
+		return platform.Usage("usage-error")
+	}
+	return nil
+}
+func Help(words []string) string {
+	var b strings.Builder
+	b.WriteString("Usage: mihomoctl [--user|--system] COMMAND [OPTIONS] [--json]\nIndependent Go Mihomo manager; private namespace: mihomoctl-go.\n")
+	for _, s := range Specs() {
+		match := len(words) <= len(s.Command)
+		for i, w := range words {
+			if i >= len(s.Command) || s.Command[i] != w {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		fmt.Fprintf(&b, "\n%s\n%s\n", strings.Join(s.Command, " "), s.Description)
+		if len(words) == len(s.Command) {
+			for _, o := range s.Options {
+				if o.Name == "python" || o.Name == "wheelhouse" || o.Name == "extras" {
+					continue
+				}
+				fmt.Fprintf(&b, "  %-25s %s\n", strings.Join(o.Flags, ", "), o.Help)
+			}
+			for _, o := range s.Args {
+				fmt.Fprintf(&b, "  %-25s %s\n", o.Name, o.Help)
+			}
+		}
+	}
+	return b.String()
+}

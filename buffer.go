@@ -22,7 +22,22 @@ const (
 	Cyan
 )
 
-func (s Style) sgr() string {
+// palette holds the SGR colour parameters of one theme. The cell style stays
+// a theme-independent attribute byte; only the colour codes change, so a
+// theme switch repaints the frame without touching the drawing code.
+type palette struct {
+	green, yellow, red, cyan string
+}
+
+// Bright accents read on a dark background, the normal ones on a light
+// background. Everything else (bold, dim, reverse) is shared.
+var (
+	darkPalette  = palette{green: "92", yellow: "93", red: "91", cyan: "96"}
+	lightPalette = palette{green: "32", yellow: "33", red: "31", cyan: "36"}
+)
+
+// sgr renders one style as an SGR sequence under the given palette.
+func (s Style) sgrWith(p palette) string {
 	var b strings.Builder
 	b.WriteString("\x1b[0")
 	add := func(code string) { b.WriteString(";"); b.WriteString(code) }
@@ -37,13 +52,13 @@ func (s Style) sgr() string {
 	}
 	switch s & (Green | Yellow | Red | Cyan) {
 	case Green:
-		add("32")
+		add(p.green)
 	case Yellow:
-		add("33")
+		add(p.yellow)
 	case Red:
-		add("31")
+		add(p.red)
 	case Cyan:
-		add("36")
+		add(p.cyan)
 	}
 	b.WriteString("m")
 	return b.String()
@@ -67,15 +82,28 @@ type Screen struct {
 	cur     []Cell
 	prev    []Cell
 	hasPrev bool
+	pal     palette
 }
 
 func NewScreen(w, h int) *Screen {
-	s := &Screen{W: w, H: h}
+	s := &Screen{W: w, H: h, pal: darkPalette}
 	s.cur = make([]Cell, w*h)
 	s.prev = make([]Cell, w*h)
 	s.Clear()
 	copy(s.prev, s.cur)
 	return s
+}
+
+// SetTheme switches the accent colours and forces a full repaint: every cell
+// of the previous frame was written with the old palette, so a diff against
+// it would leave stale colours behind.
+func (s *Screen) SetTheme(theme Theme) {
+	if theme == ThemeLight {
+		s.pal = lightPalette
+	} else {
+		s.pal = darkPalette
+	}
+	s.hasPrev = false
 }
 
 func (s *Screen) Resize(w, h int) {
@@ -185,7 +213,7 @@ func (s *Screen) Flush(w io.Writer) error {
 				cell := s.cur[i]
 				if cell.R != 0 {
 					if cell.Style != last {
-						out.WriteString(cell.Style.sgr())
+						out.WriteString(cell.Style.sgrWith(s.pal))
 						last = cell.Style
 					}
 					out.WriteRune(cell.R)
@@ -195,7 +223,7 @@ func (s *Screen) Flush(w io.Writer) error {
 		}
 	}
 	if last != Normal && out.Len() > 0 {
-		out.WriteString(Normal.sgr())
+		out.WriteString(Normal.sgrWith(s.pal))
 	}
 	copy(s.prev, s.cur)
 	s.hasPrev = true

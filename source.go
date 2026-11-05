@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -45,14 +46,117 @@ type Source interface {
 	StartLogs(ctx context.Context) (<-chan LogLine, error)
 }
 
+// LogLevelSource is an optional Source capability: reopen the log stream at
+// a chosen level. The level is part of the stream request, so changing it
+// means restarting the stream.
+//
+// It is deliberately not part of Source: a source that cannot choose a level
+// simply keeps the default one, and every existing stub still compiles.
+type LogLevelSource interface {
+	StartLogsAt(ctx context.Context, level string) (<-chan LogLine, error)
+}
+
+// SubscriptionInputCli is an optional CliSource capability: import a private
+// subscription with the guided "simple" semantics.
+//
+// The guided import is a service-level operation, not a CLI verb: it looks at
+// the local configuration to decide between a full provider import (the local
+// configuration is still a simple shape) and a nodes-only merge (the local
+// routing must be preserved). The CLI preview verb only accepts
+// auto/nodes/provider/policy, because "simple" has no meaning without that
+// local state.
+//
+// A service that does not implement it keeps the console honest: the request
+// falls back to "auto" and the page says so.
+type SubscriptionInputCli interface {
+	SubscriptionInput(value, kind, policy string) (Envelope, error)
+}
+
+// CrossLevelSelectSource is an optional Source capability: select a member
+// that skips the group hierarchy. The service refuses such a selection
+// unless it is authorised explicitly, so the console asks before it tries.
+type CrossLevelSelectSource interface {
+	SelectAllowCrossLevel(group, node string) error
+}
+
+// SubscriptionDiscardCli is an optional CliSource capability: release a
+// private preview the user abandoned, so the backend can drop its temporary
+// candidate file.
+type SubscriptionDiscardCli interface {
+	SubscriptionDiscard(id string) (Envelope, error)
+}
+
+// RuntimeOwnerSource is an optional CliSource capability: the service can
+// prove that the running core belongs to this user's scope. An anonymous 401
+// only proves that the controller asks for a secret; the owner proof is what
+// says that this core is the one this scope manages.
+type RuntimeOwnerSource interface {
+	// RuntimeOwnerProof reports whether the running core belongs to the
+	// scope, with the reason when it does not.
+	RuntimeOwnerProof() (bool, string)
+}
+
+// SubscriptionSaveAndStartCli is an optional CliSource capability: save the
+// previewed subscription and bring the runtime up with it.
+//
+// The service owns that sequence, and it reports what really happened: a
+// result that still waits for a restart is not a started runtime. The console
+// asks for the capability when the service offers it, and checks the
+// envelope it gets back.
+type SubscriptionSaveAndStartCli interface {
+	SubscriptionSaveAndStart(id, sha string) (Envelope, error)
+}
+
+// JournalCli is an optional CliSource capability: read the journal of the
+// runtime this scope manages.
+//
+// The journal belongs to that unit. A console that guesses a unit name would
+// read an unrelated service's log and present it as this runtime's history,
+// so the journal is only read through the service that knows the unit.
+type JournalCli interface {
+	Journal(since, until string, lines int) (Envelope, error)
+}
+
+// ConnectionDetailsSource is an optional Source capability: include the
+// sensitive connection details that the console hides by default.
+//
+// The controller answers with the source address, the inbound user and the
+// rule payload of every connection. The audited console shows only the
+// fields a human may read, so the source drops the rest; the rule payload
+// comes back only when the operator asks for the details explicitly.
+type ConnectionDetailsSource interface {
+	SetConnectionDetails(enabled bool)
+}
+
 // apiSource talks to the mihomo controller over keep-alive HTTP. Connections
 // are pooled per host, so polling costs no TCP setup, unlike the Python
 // console which opens and closes a connection per request.
 type apiSource struct {
-	base  string
-	token string
-	call  *http.Client // request/response with a hard timeout
-	live  *http.Client // streaming endpoints; bounded by context instead
+	base    string
+	token   string
+	call    *http.Client // request/response with a hard timeout
+	live    *http.Client // streaming endpoints; bounded by context instead
+	details bool         // include the sensitive connection details on request
+
+	// service is the shared application service. When it is set, the
+	// mutations that change the running core go through it: the service
+	// owns the selection rules (group membership, node identity, the
+	// cross-level authorisation) and confirms every change by reading it
+	// back. A direct controller write would bypass all of that.
+	service CliSource
+}
+
+// errControllerRedirect is the reason a controller redirect is refused.
+//
+// The controller answers with a bearer token. A redirect — even to another
+// port of the same host — would hand that token to a different service, so
+// the console never follows one: the answer has to come from the controller
+// it verified.
+var errControllerRedirect = errors.New("controller-redirect-refused")
+
+// refuseControllerRedirect refuses every redirect of the controller clients.
+func refuseControllerRedirect(req *http.Request, via []*http.Request) error {
+	return errControllerRedirect
 }
 
 func newAPISource(cfg CtlConfig) *apiSource {
@@ -66,15 +170,42 @@ func newAPISource(cfg CtlConfig) *apiSource {
 		ResponseHeaderTimeout: 10 * time.Second,
 	}
 	return &apiSource{
-		base:  "http://127.0.0.1:" + strconv.Itoa(cfg.Port),
+		base:  "http://" + net.JoinHostPort(controllerHost(cfg), strconv.Itoa(cfg.Port)),
 		token: cfg.Token,
-		call:  &http.Client{Transport: transport, Timeout: 8 * time.Second},
-		live:  &http.Client{Transport: transport},
+		call: &http.Client{Transport: transport, Timeout: 8 * time.Second,
+			CheckRedirect: refuseControllerRedirect},
+		live: &http.Client{Transport: transport, CheckRedirect: refuseControllerRedirect},
 	}
+}
+
+// newAPISourceWithService attaches the shared application service to the
+// controller source. Reads stay on the controller API; the mutations run
+// through the service, which is the only component that knows the scope
+// rules and the node identities. Without a service the source keeps its
+// direct controller behaviour, which is what the fixtures exercise.
+func newAPISourceWithService(cfg CtlConfig, cli CliSource) *apiSource {
+	source := newAPISource(cfg)
+	source.service = cli
+	return source
+}
+
+// controllerHost is the host the controller was validated on. The validated
+// address is preserved as it was written, so "::1" and "localhost" keep
+// working; a configuration without a host falls back to the IPv4 loopback
+// the fixtures use.
+func controllerHost(cfg CtlConfig) string {
+	if cfg.Host != "" {
+		return cfg.Host
+	}
+	return "127.0.0.1"
 }
 
 // verify reproduces the Python client check: the controller must reject an
 // anonymous /version with 401 and accept the authorized one.
+//
+// When the service can also prove that the running core belongs to this
+// scope, the proof is part of the check: the 401 alone says nothing about
+// whose core answered.
 func (a *apiSource) verify() error {
 	req, err := http.NewRequest("GET", a.base+"/version", nil)
 	if err != nil {
@@ -82,14 +213,37 @@ func (a *apiSource) verify() error {
 	}
 	resp, err := a.call.Do(req)
 	if err != nil {
+		if errors.Is(err, errControllerRedirect) {
+			return errControllerRedirect
+		}
 		return errors.New("controller-unreachable")
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		return errors.New("controller-authentication-not-enforced")
 	}
+	if err := a.verifyOwner(); err != nil {
+		return err
+	}
 	_, err = a.Version()
 	return err
+}
+
+// verifyOwner asks the service to prove that the running core belongs to
+// this scope. A service that cannot prove it is not asked.
+func (a *apiSource) verifyOwner() error {
+	owner, ok := a.service.(RuntimeOwnerSource)
+	if !ok {
+		return nil
+	}
+	owned, reason := owner.RuntimeOwnerProof()
+	if owned {
+		return nil
+	}
+	if reason == "" {
+		reason = "runtime-owner-mismatch"
+	}
+	return errors.New(reason)
 }
 
 func (a *apiSource) request(method, path string, body, out any, client *http.Client) error {
@@ -111,6 +265,9 @@ func (a *apiSource) request(method, path string, body, out any, client *http.Cli
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, errControllerRedirect) {
+			return errControllerRedirect
+		}
 		return errors.New("controller-unreachable")
 	}
 	defer resp.Body.Close()
@@ -155,8 +312,40 @@ func (a *apiSource) Proxies() (ProxiesDoc, error) {
 func (a *apiSource) Connections() (ConnectionsDoc, error) {
 	var out ConnectionsDoc
 	err := a.request("GET", "/connections", nil, &out, a.call)
-	return out, err
+	if err != nil {
+		return ConnectionsDoc{}, err
+	}
+	out.Connections = a.projectConnections(out.Connections)
+	return out, nil
 }
+
+// projectConnections reduces the controller document to the fields a human
+// may read.
+//
+// The controller answers with the source address, the inbound user and the
+// rule payload of every connection. The audited service drops them before
+// the data ever leaves the service, so the source drops them here too: the
+// rule payload comes back only when the operator asks for the details
+// explicitly.
+func (a *apiSource) projectConnections(conns []Conn) []Conn {
+	projected := make([]Conn, 0, len(conns))
+	for _, conn := range conns {
+		meta := conn.Metadata
+		meta.SourceIP = ""
+		meta.SourcePort = ""
+		meta.InboundUser = ""
+		if !a.details {
+			conn.RulePayload = ""
+		}
+		conn.Metadata = meta
+		projected = append(projected, conn)
+	}
+	return projected
+}
+
+// SetConnectionDetails includes the sensitive connection details (the rule
+// payload) in the projection. The console keeps them hidden by default.
+func (a *apiSource) SetConnectionDetails(enabled bool) { a.details = enabled }
 
 func (a *apiSource) Rules() (RulesDoc, error) {
 	var out RulesDoc
@@ -177,7 +366,26 @@ func (a *apiSource) Memory() (MemoryDoc, error) {
 }
 
 func (a *apiSource) Select(group, node string) error {
+	if a.service != nil {
+		// The service checks that the group is a Selector, that the node is
+		// a member of it and that the node identity is unambiguous, refuses
+		// a cross-level selection without authorisation, and confirms the
+		// change by reading the group back.
+		env, err := a.service.Run("select", group, node)
+		return serviceError(env, err)
+	}
 	return a.request("PUT", "/proxies/"+url.PathEscape(group), map[string]string{"name": node}, nil, a.call)
+}
+
+// SelectAllowCrossLevel performs the selection that skips the group
+// hierarchy. It is the explicit authorisation the service asks for; a
+// source without a service has no hierarchy to skip.
+func (a *apiSource) SelectAllowCrossLevel(group, node string) error {
+	if a.service != nil {
+		env, err := a.service.Run("select", group, node, "--allow-cross-level")
+		return serviceError(env, err)
+	}
+	return a.Select(group, node)
 }
 
 func (a *apiSource) Delay(node string, timeoutMS int) (int, error) {
@@ -185,6 +393,22 @@ func (a *apiSource) Delay(node string, timeoutMS int) (int, error) {
 }
 
 func (a *apiSource) DelayFor(provider, node string, timeoutMS int) (int, error) {
+	if a.service != nil {
+		// The service probes the exact node identity against the public
+		// target and owns the timeout; it also refuses a node that is not
+		// in the core any more.
+		args := []string{"latency", node}
+		if provider != "" {
+			args = append(args, "--provider", provider)
+		} else {
+			args = append(args, "--global")
+		}
+		env, err := a.service.Run(args...)
+		if err := serviceError(env, err); err != nil {
+			return 0, err
+		}
+		return envelopeDelay(env), nil
+	}
 	var out struct {
 		Delay int `json:"delay"`
 	}
@@ -204,7 +428,57 @@ func (a *apiSource) DelayFor(provider, node string, timeoutMS int) (int, error) 
 }
 
 func (a *apiSource) SetMode(mode string) error {
+	if a.service != nil {
+		// The service validates the mode and confirms it by reading the
+		// running configuration back.
+		env, err := a.service.Run("mode", mode)
+		return serviceError(env, err)
+	}
 	return a.request("PATCH", "/configs", map[string]string{"mode": mode}, nil, a.call)
+}
+
+// serviceError turns a service envelope into an error. A refusal keeps the
+// service's own code and detail, so the console can show why the change was
+// refused instead of a generic failure.
+func serviceError(env Envelope, err error) error {
+	if err != nil {
+		return err
+	}
+	if env.Overall == "PASS" {
+		return nil
+	}
+	if len(env.Errors) > 0 {
+		failure := env.Errors[0]
+		code := failure.Code
+		if code == "" {
+			code = "service-request-failed"
+		}
+		if failure.Detail != "" {
+			return fmt.Errorf("%s: %s", code, failure.Detail)
+		}
+		return errors.New(code)
+	}
+	return errors.New("service-request-failed")
+}
+
+// envelopeDelay reads the measured delay out of a service envelope. The
+// value crosses a JSON boundary, so it arrives as a float64.
+func envelopeDelay(env Envelope) int {
+	switch value := env.Data["delay_ms"].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case json.Number:
+		number, err := value.Int64()
+		if err != nil {
+			return 0
+		}
+		return int(number)
+	}
+	return 0
 }
 
 // streamLines reads one newline-delimited JSON stream until the context ends.
@@ -219,6 +493,9 @@ func streamLines[T any](a *apiSource, ctx context.Context, path string, mkErr fu
 	req.Header.Set("Authorization", "Bearer "+a.token)
 	resp, err := a.live.Do(req)
 	if err != nil {
+		if errors.Is(err, errControllerRedirect) {
+			return nil, errControllerRedirect
+		}
 		return nil, errors.New("controller-unreachable")
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -267,6 +544,12 @@ func (a *apiSource) ProxyProviders() (ProxyProvidersDoc, error) {
 }
 
 func (a *apiSource) RefreshProvider(name string) error {
+	if a.service != nil {
+		// The service resolves the exact configured provider name and
+		// refuses an unknown one instead of refreshing a guess.
+		env, err := a.service.Run("provider", "refresh", name)
+		return serviceError(env, err)
+	}
 	return a.request("PUT", "/providers/proxies/"+url.PathEscape(name), nil, nil, a.call)
 }
 
@@ -310,7 +593,18 @@ func (a *apiSource) StartTraffic(ctx context.Context) (<-chan Traffic, error) {
 }
 
 func (a *apiSource) StartLogs(ctx context.Context) (<-chan LogLine, error) {
-	return streamLines[LogLine](a, ctx, "/logs?level=info", func(err error) LogLine {
+	return a.StartLogsAt(ctx, "info")
+}
+
+// StartLogsAt opens the log stream at the requested level. The level is part
+// of the request, so a level change means a new stream.
+func (a *apiSource) StartLogsAt(ctx context.Context, level string) (<-chan LogLine, error) {
+	switch level {
+	case "debug", "info", "warning", "error":
+	default:
+		level = "info"
+	}
+	return streamLines[LogLine](a, ctx, "/logs?level="+level, func(err error) LogLine {
 		return LogLine{Type: "error", Payload: "日志流读取中断：" + err.Error()}
 	})
 }
@@ -548,6 +842,12 @@ func (d *demoSource) StartTraffic(ctx context.Context) (<-chan Traffic, error) {
 }
 
 func (d *demoSource) StartLogs(ctx context.Context) (<-chan LogLine, error) {
+	return d.StartLogsAt(ctx, "info")
+}
+
+// StartLogsAt opens the demo log stream at the requested level, so the
+// level switch is observable without a live core.
+func (d *demoSource) StartLogsAt(ctx context.Context, level string) (<-chan LogLine, error) {
 	out := make(chan LogLine, 32)
 	messages := []string{
 		"match DomainSuffix(openai.com) using PROXY",
@@ -558,6 +858,7 @@ func (d *demoSource) StartLogs(ctx context.Context) (<-chan LogLine, error) {
 		"initial configuration in progress",
 	}
 	levels := []string{"info", "warning", "error"}
+	minimum := logLevelRank(level)
 	go func() {
 		defer close(out)
 		for {
@@ -565,8 +866,12 @@ func (d *demoSource) StartLogs(ctx context.Context) (<-chan LogLine, error) {
 			case <-ctx.Done():
 				return
 			case <-time.After(time.Duration(200+rand.Intn(300)) * time.Millisecond):
+				line := LogLine{Type: levels[rand.Intn(10)/4], Payload: messages[rand.Intn(len(messages))]}
+				if logLevelRank(line.Type) < minimum {
+					continue
+				}
 				select {
-				case out <- LogLine{Type: levels[rand.Intn(10)/4], Payload: messages[rand.Intn(len(messages))]}:
+				case out <- line:
 				case <-ctx.Done():
 					return
 				}
@@ -574,4 +879,19 @@ func (d *demoSource) StartLogs(ctx context.Context) (<-chan LogLine, error) {
 		}
 	}()
 	return out, nil
+}
+
+// logLevelRank orders the log levels the core accepts.
+func logLevelRank(level string) int {
+	switch level {
+	case "debug":
+		return 0
+	case "info":
+		return 1
+	case "warning":
+		return 2
+	case "error":
+		return 3
+	}
+	return 1
 }

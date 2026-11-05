@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/liuzq1103/mihomo-userctl",
+  "tag": "v1.5.1",
+  "commit": "f33204dd5e0c7a52d2df4df4d9aa3188b2e7f385",
+  "command_contract_sha256": "0d9e30e507859fc36116baa095fd6b18e6ee7cefb4456d086a96b41be25e7331",
+  "baseline_leaf_commands": 70,
+  "go_installation_leaf_commands": 4,
+  "scope_namespace": "mihomoctl-go",
+  "cross_project_migration": false
+}

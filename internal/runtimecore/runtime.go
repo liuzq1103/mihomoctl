@@ -1,0 +1,708 @@
+package runtimecore
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/liuzq1103/mihomoctl/internal/platform"
+	"gopkg.in/yaml.v3"
+)
+
+// Handles recognizes only the native runtime grammar. Core downloads and releases
+// are deliberately left to their respective handlers.
+func Handles(command []string) bool {
+	if len(command) == 1 {
+		switch command[0] {
+		case "init", "start", "stop", "restart", "status", "logs", "profiles", "exec", "direct", "integration", "health", "doctor", "reset", "migrate", "rollback":
+			return true
+		}
+	}
+	if len(command) != 2 {
+		return false
+	}
+	switch command[0] {
+	case "config":
+		return member(command[1], "validate", "check")
+	case "profile":
+		return member(command[1], "list", "show", "validate", "set-default")
+	case "env":
+		return member(command[1], "show", "export")
+	case "integration":
+		return member(command[1], "list", "show", "check", "export", "install", "remove")
+	case "service":
+		return member(command[1], "install", "start", "stop", "restart", "status", "uninstall")
+	case "tun":
+		return member(command[1], "status", "enable", "disable")
+	case "health":
+		return command[1] == "check"
+	case "core":
+		return member(command[1], "adopt", "list")
+	}
+	return false
+}
+func member(s string, values ...string) bool {
+	for _, v := range values {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// Run executes one native request. On Linux exec/direct replace the caller, so
+// signals, terminal ownership and exit status have their normal exec semantics.
+func Run(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
+	if !Handles(r.Command) {
+		e := platform.Usage("unknown-command")
+		return platform.Failure(r.Name(), a.Scope.Name, e), e
+	}
+	var doc platform.Envelope
+	if !mutating(r) && !member(r.Name(), "direct", "rollback", "migrate") {
+		if e := pendingRecovery(a); e != nil {
+			return platform.Failure(r.Name(), a.Scope.Name, e), e
+		}
+	}
+	work := func() error { var e error; doc, e = dispatch(ctx, a, r); return e }
+	var err error
+	if mutating(r) {
+		err = platform.WithLock(ctx, a.Scope, func() error {
+			if e := preventLockInheritance(a); e != nil {
+				return e
+			}
+			if e := recoverCompound(ctx, a); e != nil {
+				return e
+			}
+			if e := recoverTransaction(a); e != nil {
+				return e
+			}
+			return work()
+		})
+	} else {
+		err = work()
+	}
+	if err != nil {
+		return platform.Failure(r.Name(), a.Scope.Name, err), err
+	}
+	if !mutating(r) && !member(r.Name(), "direct", "rollback", "migrate") {
+		if e := pendingRecovery(a); e != nil {
+			return platform.Failure(r.Name(), a.Scope.Name, e), e
+		}
+	}
+	return doc, nil
+}
+func mutating(r platform.Request) bool {
+	n := r.Name()
+	return member(n, "init", "start", "stop", "restart", "profile-set-default", "core-adopt", "service-install", "service-start", "service-stop", "service-restart", "service-uninstall", "tun-enable", "tun-disable", "integration-install", "integration-remove") || n == "reset" && r.Has("apply") || n == "migrate" && r.Has("apply") || n == "env-export" && r.Get("output") != "" || n == "integration-export" && r.Get("output-dir") != ""
+}
+func dispatch(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
+	doc := platform.Document(r.Name(), a.Scope.Name, nil)
+	set := func(m map[string]any) (platform.Envelope, error) { doc.Data = m; return doc, nil }
+	switch r.Name() {
+	case "init":
+		d, e := initialize(ctx, a, r, false)
+		doc.Data = d
+		return doc, e
+	case "start", "stop", "restart", "service-start", "service-stop", "service-restart":
+		action := strings.TrimPrefix(r.Name(), "service-")
+		if e := lifecycle(ctx, a, action); e != nil {
+			return doc, e
+		}
+		return status(ctx, a, r.Name(), action == "stop")
+	case "status", "service-status":
+		return status(ctx, a, r.Name(), false)
+	case "health", "health-check":
+		return health(ctx, a, r)
+	case "exec", "direct":
+		return doc, execute(ctx, a, r)
+	case "profile-list", "profiles":
+		m, e := loadManager(a)
+		if e != nil {
+			return doc, e
+		}
+		rows := []map[string]any{}
+		for _, n := range sortedKeys(m.Profiles) {
+			rows = append(rows, profileDoc(n, m.Profiles[n]))
+		}
+		return set(map[string]any{"profiles": rows, "default_profile": m.Default})
+	case "profile-show", "profile-validate", "profile-set-default":
+		n := r.Arg(0)
+		if n == "" {
+			return doc, platform.Usage("profile-required")
+		}
+		m, e := loadManager(a)
+		if e != nil {
+			return doc, e
+		}
+		p, ok := m.Profiles[n]
+		if !ok {
+			return doc, platform.Usage("profile-unknown")
+		}
+		if r.Name() == "profile-show" {
+			return set(profileDoc(n, p))
+		}
+		if _, e = resolve(a, n); e != nil {
+			return doc, e
+		}
+		if r.Name() == "profile-validate" {
+			return set(map[string]any{"profile": n, "valid": true})
+		}
+		m.Default = n
+		b, e := yaml.Marshal(m)
+		if e != nil {
+			return doc, e
+		}
+		if e = applyFiles(a, map[string][]byte{a.Scope.ManagerPath(): b}); e != nil {
+			return doc, e
+		}
+		return set(map[string]any{"default_profile": n})
+	case "config-validate", "config-check":
+		return configValidate(ctx, a, r)
+	case "env-show", "env-export":
+		return environmentCommand(a, r)
+	case "logs":
+		return logs(ctx, a, r)
+	case "doctor":
+		return doctor(ctx, a, r)
+	case "integration", "integration-list", "integration-show", "integration-check", "integration-export", "integration-install", "integration-remove":
+		return integration(ctx, a, r)
+	case "service-install", "service-uninstall":
+		return serviceCommand(ctx, a, r)
+	case "tun-status", "tun-enable", "tun-disable":
+		return tunCommand(ctx, a, r)
+	case "core-adopt", "core-list":
+		return coreCommand(ctx, a, r)
+	case "reset":
+		return reset(ctx, a, r)
+	case "rollback":
+		return doc, platform.Usage("historical-rollback-disabled")
+	case "migrate":
+		if r.Has("apply") == r.Has("dry-run") {
+			return doc, platform.Usage("migration-preview-required")
+		}
+		if r.Has("remove-loader") || !r.Has("no-import") && r.Has("apply") {
+			return doc, platform.Usage("python-migration-disabled")
+		}
+		return set(map[string]any{"legacy_config": false, "imported": false, "python_migration": false, "namespace": "mihomoctl-go", "changed": false, "loader_blocks": map[string]any{}, "legacy_units": []any{}})
+	}
+	return doc, platform.Usage("unknown-command")
+}
+
+type fileSnapshot struct {
+	Path    string
+	Before  []byte
+	Existed bool
+	After   []byte
+	Delete  bool
+}
+type journal struct {
+	Version int
+	Files   []fileSnapshot
+}
+
+func journalPath(a platform.App) string {
+	return filepath.Join(a.Scope.StateRoot, "transaction.json")
+}
+
+// applyFiles journals original bytes before publication. A crashed multi-file
+// write is restored under the operation lock before another mutation can run.
+func applyFiles(a platform.App, files map[string][]byte) error {
+	if e := platform.CheckPath(journalPath(a)); e != nil {
+		return e
+	}
+	if _, e := os.Lstat(journalPath(a)); e == nil {
+		return platform.Usage("transaction-pending")
+	} else if !os.IsNotExist(e) {
+		return e
+	}
+	if e := trackCompoundWrites(a, files); e != nil {
+		return e
+	}
+	j := journal{Version: 1}
+	for _, p := range sortedKeys(files) {
+		if !transactionPath(a, p) {
+			return platform.Usage("transaction-path-unsafe")
+		}
+		if e := platform.CheckPath(p); e != nil {
+			return e
+		}
+		v := fileSnapshot{Path: p, After: files[p], Delete: files[p] == nil}
+		if _, e := os.Lstat(p); e == nil {
+			b, e := readManagedFile(a, p)
+			if e != nil {
+				return e
+			}
+			v.Before = b
+			v.Existed = true
+		} else if !os.IsNotExist(e) {
+			return e
+		}
+		j.Files = append(j.Files, v)
+	}
+	raw, e := json.Marshal(j)
+	if e != nil {
+		return e
+	}
+	if int64(len(raw)) > fileJournalLimit {
+		return platform.Usage("transaction-too-large")
+	}
+	if e := platform.AtomicWrite(journalPath(a), append(raw, '\n'), 0600); e != nil {
+		return e
+	}
+	if e = syncDirectory(a.Scope.StateRoot); e != nil {
+		return e
+	}
+	for _, f := range j.Files {
+		if e := publishFile(a, f.Path, f.After, f.Delete); e != nil {
+			if r := restoreFiles(a, j); r != nil {
+				return platform.Fail("rollback-failed")
+			}
+			if r := durableRemove(journalPath(a)); r != nil {
+				return platform.Fail("transaction-journal-unavailable")
+			}
+			return e
+		}
+	}
+	if e := durableRemove(journalPath(a)); e != nil {
+		if r := restoreFiles(a, j); r != nil {
+			return platform.Fail("rollback-failed")
+		}
+		return e
+	}
+	return nil
+}
+func transactionPath(a platform.App, p string) bool {
+	return absolute(p) && (a.Scope.Contains(p) || p == unitPath(a) || within(unitPath(a)+".d", p) || integrationPathAllowed(a, p)) && p != journalPath(a) && p != compoundPath(a)
+}
+func publishFile(a platform.App, p string, b []byte, remove bool) error {
+	if e := platform.CheckPath(p); e != nil {
+		return e
+	}
+	if remove {
+		if _, e := os.Lstat(p); os.IsNotExist(e) {
+			return nil
+		}
+		if _, e := readManagedFile(a, p); e != nil {
+			return e
+		}
+		return durableRemove(p)
+	}
+	return atomicPrivateArtifact(a, p, b)
+}
+
+// Standard systemd parent directories may be 0755. Validate their ownership
+// without changing their permissions, and always publish private managed leaves.
+func atomicPrivateArtifact(a platform.App, p string, b []byte) error {
+	if e := platform.CheckPath(p); e != nil {
+		return e
+	}
+	if _, e := os.Lstat(p); e == nil {
+		if _, e = readManagedFile(a, p); e != nil {
+			return e
+		}
+	} else if !os.IsNotExist(e) {
+		return e
+	}
+	if e := checkArtifactDir(filepath.Dir(p)); e != nil {
+		return e
+	}
+	f, e := os.CreateTemp(filepath.Dir(p), ".mihomoctl-go-*")
+	if e != nil {
+		return e
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if e = f.Chmod(0600); e == nil {
+		_, e = f.Write(b)
+	}
+	if e == nil {
+		e = f.Sync()
+	}
+	ce := f.Close()
+	if e == nil {
+		e = ce
+	}
+	if e != nil {
+		return e
+	}
+	if e = os.Rename(tmp, p); e != nil {
+		return e
+	}
+	if d, e := os.Open(filepath.Dir(p)); e == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return nil
+}
+func restoreFiles(a platform.App, j journal) error {
+	for i := len(j.Files) - 1; i >= 0; i-- {
+		f := j.Files[i]
+		if e := publishFile(a, f.Path, f.Before, !f.Existed); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+func recoverTransaction(a platform.App) error {
+	p := journalPath(a)
+	if e := platform.CheckPath(p); e != nil {
+		return e
+	}
+	if _, e := os.Lstat(p); os.IsNotExist(e) {
+		return nil
+	}
+	b, e := readPrivateBounded(p, fileJournalLimit)
+	if e != nil {
+		return e
+	}
+	var j journal
+	if json.Unmarshal(b, &j) != nil || j.Version != 1 || len(j.Files) > 1024 {
+		return platform.Usage("transaction-invalid")
+	}
+	for _, f := range j.Files {
+		if !transactionPath(a, f.Path) {
+			return platform.Usage("transaction-invalid")
+		}
+		if _, e := os.Lstat(f.Path); e == nil {
+			current, e := readManagedFile(a, f.Path)
+			if e != nil {
+				return e
+			}
+			if !bytesEqual(current, f.Before) && !bytesEqual(current, f.After) {
+				return platform.Usage("transaction-conflict")
+			}
+		}
+	}
+	if e = restoreFiles(a, j); e != nil {
+		return platform.Fail("rollback-failed")
+	}
+	return durableRemove(p)
+}
+func bytesEqual(a, b []byte) bool { return string(a) == string(b) }
+
+func freePort() (int, error) {
+	l, e := net.Listen("tcp4", "127.0.0.1:0")
+	if e != nil {
+		return 0, e
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+func initialize(ctx context.Context, a platform.App, r platform.Request, replacing bool) (map[string]any, error) {
+	if !replacing {
+		if e := platform.CheckPath(a.Scope.ManagerPath()); e != nil {
+			return nil, e
+		}
+		if _, e := os.Lstat(a.Scope.ManagerPath()); e == nil {
+			return nil, platform.Usage("already-initialized")
+		} else if !os.IsNotExist(e) {
+			return nil, e
+		}
+	}
+	m, files, result, e := initialPlan(ctx, a, r)
+	if e != nil {
+		return nil, e
+	}
+	if !replacing {
+		for p := range files {
+			if _, e := os.Lstat(p); e == nil {
+				return nil, platform.Usage("initialization-target-exists")
+			} else if !os.IsNotExist(e) {
+				return nil, e
+			}
+		}
+	}
+	if e = applyFiles(a, files); e != nil {
+		return nil, e
+	}
+	if a.Scope.System {
+		if e = prepareServiceFiles(ctx, a, resolved{Manager: m, Text: files[m.Core.Config]}); e != nil {
+			if !replacing {
+				remove := map[string][]byte{}
+				for p := range files {
+					remove[p] = nil
+				}
+				if cleanup := applyFiles(a, remove); cleanup != nil {
+					return nil, platform.Fail("rollback-failed")
+				}
+			}
+			return nil, e
+		}
+	}
+	return result, nil
+}
+func initialPlan(ctx context.Context, a platform.App, r platform.Request) (manager, map[string][]byte, map[string]any, error) {
+	var m manager
+	bad := func(e error) (manager, map[string][]byte, map[string]any, error) { return m, nil, nil, e }
+	binary := r.Get("core")
+	if binary == "" {
+		return bad(platform.Usage("core-required"))
+	}
+	binary, e := filepath.Abs(binary)
+	if e != nil {
+		return bad(e)
+	}
+	if e = trustedExecutable(binary, a.Scope.System); e != nil {
+		return bad(e)
+	}
+	if a.Scope.System {
+		if _, _, e = accountIdentity(true); e != nil {
+			return bad(e)
+		}
+	}
+	port, e := freePort()
+	if e != nil {
+		return bad(e)
+	}
+	if raw := r.Get("port"); raw != "" {
+		_, e = fmt.Sscanf(raw, "%d", &port)
+		if e != nil || fmt.Sprint(port) != raw || port < 1024 || port > 65535 {
+			return bad(platform.Usage("port-invalid"))
+		}
+	}
+	cp, e := freePort()
+	if e != nil {
+		return bad(e)
+	}
+	for cp == port {
+		cp, e = freePort()
+		if e != nil {
+			return bad(e)
+		}
+	}
+	u, e := platform.Token()
+	if e != nil {
+		return bad(e)
+	}
+	password, e := platform.Token()
+	if e != nil {
+		return bad(e)
+	}
+	secret, e := platform.Token()
+	if e != nil {
+		return bad(e)
+	}
+	creds := credentials{"user-" + u[:20], password}
+	cfg := map[string]any{"mode": "rule", "listeners": []any{map[string]any{"name": "proxy", "type": "mixed", "listen": "127.0.0.1", "port": port, "users": []any{map[string]any{"username": creds.Username, "password": creds.Password}}}}, "external-controller": fmt.Sprintf("127.0.0.1:%d", cp), "secret": secret, "profile": map[string]any{"store-selected": true}, "rules": []any{"MATCH,DIRECT"}}
+	if src := r.Get("config"); src != "" {
+		v, e := platform.ReadYAML(src, true)
+		if e != nil {
+			return bad(e)
+		}
+		if platform.Bool(platform.Map(v["tun"])["enable"]) {
+			return bad(platform.Usage("import-tun-forbidden"))
+		}
+		for _, k := range []string{"listeners", "external-controller", "secret"} {
+			if _, ok := v[k]; !ok {
+				v[k] = cfg[k]
+			}
+		}
+		p, ok := v["profile"].(map[string]any)
+		if v["profile"] != nil && !ok {
+			return bad(invalid())
+		}
+		if p == nil {
+			p = map[string]any{}
+		}
+		p["store-selected"] = true
+		v["profile"] = p
+		cfg = v
+	}
+	allowed := r.Options["allow-non-loopback"]
+	eps, controller, e := parseEndpoints(cfg, a.Scope.System, allowed)
+	if e != nil {
+		return bad(e)
+	}
+	profileName := r.Get("_profile")
+	if profileName == "" {
+		profileName = "default"
+	}
+	if !namePattern.MatchString(profileName) {
+		return bad(invalid())
+	}
+	p := defaults(profile{Credentials: filepath.Join(a.Scope.ConfigRoot, "credentials", profileName+".yaml")})
+	for _, ep := range eps {
+		if p.HTTP == "" && ep.http() {
+			p.HTTP = ep.Name
+		}
+		if p.SOCKS == "" && ep.socks() {
+			p.SOCKS = ep.Name
+		}
+	}
+	for _, ep := range eps {
+		if ep.Name == p.HTTP || p.HTTP == "" && ep.Name == p.SOCKS {
+			port = ep.Port
+			break
+		}
+	}
+	if controller != nil {
+		cp = controller.Port
+	} else {
+		cp = 0
+	}
+	if p.HTTP == "" && p.SOCKS == "" {
+		return bad(platform.Usage("proxy-listener-required"))
+	}
+	for _, ep := range eps {
+		if ep.Name == p.HTTP || ep.Name == p.SOCKS {
+			if len(ep.Users) == 0 {
+				return bad(platform.Usage("credentials-required"))
+			}
+			if creds.Username == "" {
+				creds = ep.Users[0]
+			} else if !hasCredential(ep, creds) {
+				if r.Get("config") != "" && creds.Username == "user-"+u[:20] {
+					creds = ep.Users[0]
+				} else {
+					return bad(platform.Usage("credentials-mismatch"))
+				}
+			}
+		}
+	}
+	backend := "process"
+	if a.Scope.System {
+		backend = "systemd"
+	}
+	m = manager{Version: 1, Core: coreSettings{Binary: binary, Config: filepath.Join(a.Scope.ConfigRoot, "mihomo", "config.yaml"), Backend: backend}, Default: profileName, Profiles: map[string]profile{profileName: p}, Bindings: map[string]binding{}, Tun: tunSettings{Device: "mihomo0"}, Allow: allowed}
+	if e = validateManager(a, m); e != nil {
+		return bad(e)
+	}
+	text, e := yaml.Marshal(cfg)
+	if e != nil {
+		return bad(e)
+	}
+	if e = validateCore(ctx, a, binary, text); e != nil {
+		return bad(e)
+	}
+	mb, e := yaml.Marshal(m)
+	if e != nil {
+		return bad(e)
+	}
+	cb, e := yaml.Marshal(creds)
+	if e != nil {
+		return bad(e)
+	}
+	files := map[string][]byte{a.Scope.ManagerPath(): mb, m.Core.Config: text, p.Credentials: cb}
+	generated, e := json.Marshal(generatedConfig{Hash: platform.Hash(text), Automatic: r.Get("port") == "" && r.Get("config") == ""})
+	if e != nil {
+		return bad(e)
+	}
+	files[generatedPath(a)] = generated
+	return m, files, map[string]any{"manager": a.Scope.ManagerPath(), "config": m.Core.Config, "credentials": p.Credentials, "core": map[string]any{"binary": binary}, "port": port, "controller_port": cp, "scope": a.Scope.Name, "state": "initialized"}, nil
+}
+func configValidate(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
+	doc := platform.Document(r.Name(), a.Scope.Name, nil)
+	var text []byte
+	var m manager
+	var e error
+	if p := r.Get("file"); p != "" {
+		text, e = readManagedFile(a, p)
+		doc.Data["file"] = p
+		if e != nil {
+			return doc, e
+		}
+		m, e = loadManager(a)
+		if e != nil {
+			if _, stat := os.Lstat(a.Scope.ManagerPath()); !os.IsNotExist(stat) {
+				return doc, e
+			}
+			m = manager{}
+		}
+	} else {
+		x, e := resolve(a, r.Get("profile"))
+		if e != nil {
+			return doc, e
+		}
+		text = x.Text
+		m = x.Manager
+		doc.Data["config"] = m.Core.Config
+	}
+	cfg, e := platform.DecodeYAML(text)
+	if e != nil {
+		return doc, e
+	}
+	if _, _, e = parseEndpoints(cfg, a.Scope.System, m.Allow); e != nil {
+		return doc, e
+	}
+	addCheck(&doc, "config-parse", true, "strict YAML and listening surfaces verified")
+	if m.Core.Binary == "" {
+		doc.Checks = append(doc.Checks, platform.Check{Name: "core-validate", Status: "UNVERIFIED", Evidence: "unavailable", Detail: "initialize a trusted core before semantic validation"})
+		doc.Overall = "UNVERIFIED"
+		return doc, nil
+	}
+	if e = validateCore(ctx, a, m.Core.Binary, text); e != nil {
+		return doc, e
+	}
+	addCheck(&doc, "core-validate", true, "isolated core validation")
+	return doc, nil
+}
+func addCheck(doc *platform.Envelope, name string, ok bool, detail string) {
+	s := "PASS"
+	if !ok {
+		s = "FAIL"
+		doc.Overall = "FAIL"
+	}
+	doc.Checks = append(doc.Checks, platform.Check{Name: name, Status: s, Evidence: "confirmed", Detail: detail})
+}
+func readLogWindow(p string) ([]byte, int64, error) {
+	if e := platform.CheckPath(p); e != nil {
+		return nil, 0, e
+	}
+	f, e := openPrivateRegular(p)
+	if e != nil {
+		return nil, 0, e
+	}
+	defer f.Close()
+	st, e := f.Stat()
+	if e != nil {
+		return nil, 0, e
+	}
+	if e = checkLogInfo(st); e != nil {
+		return nil, 0, e
+	}
+	start := st.Size() - platform.Limit
+	if start < 0 {
+		start = 0
+	}
+	if _, e = f.Seek(start, io.SeekStart); e != nil {
+		return nil, 0, e
+	}
+	b, e := io.ReadAll(io.LimitReader(f, platform.Limit))
+	return b, start, e
+}
+func doctor(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
+	doc := platform.Document(r.Name(), a.Scope.Name, nil)
+	x, e := resolve(a, "")
+	addCheck(&doc, "manager-config", e == nil, safeDetail(e))
+	if e != nil {
+		return doc, nil
+	}
+	e = trustedExecutable(x.Manager.Core.Binary, a.Scope.System)
+	addCheck(&doc, "core-executable", e == nil, safeDetail(e))
+	if e == nil {
+		e = validateCore(ctx, a, x.Manager.Core.Binary, x.Text)
+		addCheck(&doc, "core-validate", e == nil, safeDetail(e))
+	}
+	h, e := health(ctx, a, platform.Request{Command: []string{"health"}})
+	if e != nil {
+		addCheck(&doc, "runtime", false, platform.SafeError(e))
+	} else {
+		doc.Checks = append(doc.Checks, h.Checks...)
+		if h.Overall != "PASS" {
+			doc.Overall = h.Overall
+		}
+	}
+	doc.Data["namespace"] = "mihomoctl-go"
+	return doc, nil
+}
+func safeDetail(e error) string {
+	if e == nil {
+		return ""
+	}
+	return platform.SafeError(e)
+}

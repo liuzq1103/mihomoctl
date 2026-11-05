@@ -1,47 +1,184 @@
-// mihomoctl-tui is the Go rewrite of the mihomoctl interactive console.
+// mihomoctl is an independently scoped native Go Mihomo manager.
 //
 // It applies the techniques that make htop feel instant: a double-buffered
 // cell grid flushed as per-cell diffs, immediate-mode drawing, one event loop
-// that never blocks on I/O, and keep-alive HTTP to the controller. Zero
-// third-party dependencies; build with:
+// that never blocks on I/O, and keep-alive HTTP to the controller. Build with:
 //
 //	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o mihomoctl-tui .
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/liuzq1103/mihomoctl/internal/command"
+	"github.com/liuzq1103/mihomoctl/internal/platform"
 	"os"
+	"os/signal"
+	"strings"
 )
 
-func main() {
-	config := flag.String("config", "", "mihomo config path (default $XDG_CONFIG_HOME/mihomo/config.yaml)")
-	page := flag.String("page", "overview", "initial page")
-	demo := flag.Bool("demo", false, "use synthetic data instead of a live controller")
-	render := flag.Bool("render", false, "dump one rendered frame to stdout and exit (no tty needed)")
-	binary := flag.String("mihomoctl", "mihomoctl", "mihomoctl CLI binary for transactional operations")
-	width := flag.Int("width", 100, "render width with -render")
-	height := flag.Int("height", 30, "render height with -render")
-	flag.Parse()
+func main() { os.Exit(runMain(os.Args[1:])) }
 
-	src, cli := pickSource(*demo, *config, *binary)
-
-	if *render {
-		os.Exit(renderFrame(src, cli, *page, *width, *height))
+func runMain(args []string) int {
+	if len(args) == 0 {
+		if st, e := os.Stdin.Stat(); e != nil || st.Mode()&os.ModeCharDevice == 0 {
+			fmt.Print(command.Help(nil))
+			return 0
+		}
 	}
-
+	legacy := len(args) == 0
+	if len(args) > 0 {
+		for _, f := range []string{"-config", "-page", "-demo", "-render", "-mihomoctl", "-width", "-height"} {
+			if args[0] == f || strings.HasPrefix(args[0], f+"=") {
+				legacy = true
+			}
+		}
+	}
+	var consoleRequest platform.Request
+	plain := false
+	system := false
+	theme := "dark"
+	ascii := false
+	if !legacy {
+		p, err := command.Parse(args, os.Stdin, os.Stdout, os.Stderr)
+		if err != nil {
+			env := platform.Failure(p.Request.Name(), scopeName(p.System), err)
+			if env.Command == "" {
+				env.Command = "mihomoctl"
+			}
+			return emitCLI(env, p.JSON)
+		}
+		if p.Help != "" {
+			if p.JSON {
+				return emitCLI(platform.Document("help", scopeName(p.System), helpDocument(args, p.Help)), true)
+			}
+			fmt.Print(p.Help)
+			return 0
+		}
+		if len(p.Request.Command) > 0 && p.Request.Command[0] == "tui" {
+			if p.JSON {
+				return emitCLI(platform.Failure("tui", scopeName(p.System), platform.Usage("tui-json-not-supported")), true)
+			}
+			if err := validateConsoleOptions(p.Request, p.System); err != nil {
+				return emitCLI(platform.Failure("tui", scopeName(p.System), err), false)
+			}
+			consoleRequest = p.Request
+			system = p.System
+			theme = p.Request.Get("theme")
+			ascii = p.Request.Has("ascii")
+			plain = p.Request.Has("plain") || p.Request.Get("engine") == "plain"
+			args = []string{}
+		} else {
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer cancel()
+			env := command.Execute(ctx, p.System, p.Request)
+			return emitCLI(env, p.JSON)
+		}
+	}
+	flags := flag.NewFlagSet("mihomoctl", flag.ContinueOnError)
+	config := flags.String("config", consoleRequest.Get("config"), "explicit private core configuration")
+	page := flags.String("page", "overview", "initial page")
+	demo := flags.Bool("demo", false, "use synthetic data")
+	render := flags.Bool("render", false, "render one frame without a tty")
+	binary := flags.String("mihomoctl", "", "deprecated compatibility option; backend is always built in")
+	width := flags.Int("width", 100, "render width")
+	height := flags.Int("height", 30, "render height")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "mihomoctl: invalid arguments")
+		return 2
+	}
+	if !*render && !consoleRequest.Has("stdin") && !interactiveConsole() {
+		fmt.Fprintln(os.Stderr, "mihomoctl: tui-requires-interactive-linux-terminal")
+		return 2
+	}
+	var src Source
+	var cli CliSource
+	if *demo {
+		src = newDemoSource()
+		cli = &demoCli{}
+	} else {
+		cli = &realCli{system: system}
+		// First-use preparation belongs only to a human console, never render.
+		if !*render {
+			if err := prepareConsole(context.Background(), system); err != nil {
+				fmt.Fprintln(os.Stderr, "mihomoctl:", platform.SafeError(err))
+			}
+		}
+		src = &nativeSource{system: system, explicit: *config, cli: cli}
+	}
+	var seeded *Envelope
+	if consoleRequest.Has("stdin") {
+		env, err := stdinConsolePreview(cli, consoleRequest)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mihomoctl:", err)
+			return 2
+		}
+		seeded = &env
+		if err = restoreConsoleInput(); err != nil {
+			fmt.Fprintln(os.Stderr, "mihomoctl:", err)
+			return 2
+		}
+	}
+	_ = binary
+	if *render {
+		return renderFrame(src, cli, *page, *width, *height)
+	}
+	if plain {
+		if seeded != nil {
+			if err := offerPlainPreview(src, cli, os.Stdin, os.Stdout, *seeded); err != nil {
+				fmt.Fprintln(os.Stderr, "mihomoctl:", err)
+				return 2
+			}
+		}
+		if err := runPlainConsole(src, cli, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "mihomoctl:", err)
+			return 2
+		}
+		return 0
+	}
 	raw, err := enterRaw()
 	if err != nil {
-		fatal(err)
+		fmt.Fprintln(os.Stderr, "mihomoctl:", err)
+		return 2
 	}
 	defer raw.restore()
 	w, h := termSize()
 	fmt.Print("\x1b[?1049h\x1b[?25l\x1b[?7l")
 	defer fmt.Print("\x1b[?7h\x1b[?25h\x1b[?1049l\x1b[0m")
 	app := NewApp(src, cli, w, h, *page, *demo)
-	if err := app.Run(); err != nil {
-		fatal(err)
+	app.Configure(theme, ascii)
+	app.ConfigureScript(consoleRequest.Get("script"), consoleRequest.Has("flclash-compat"))
+	app.SetDetails(consoleRequest.Has("details"))
+	if seeded != nil {
+		app.onAPI(apiMsg{kind: "cli:subscription-preview", preview: seeded.Data})
+		app.changePage(pageSubscriptions)
 	}
+	if err := app.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "mihomoctl:", err)
+		return 2
+	}
+	return 0
+}
+
+func emitCLI(env platform.Envelope, jsonMode bool) int {
+	if jsonMode {
+		if err := json.NewEncoder(os.Stdout).Encode(env); err != nil {
+			return 2
+		}
+	} else if env.Overall != "PASS" {
+		for _, e := range env.Errors {
+			fmt.Fprintln(os.Stderr, "mihomoctl:", e.Code)
+		}
+		fmt.Fprint(os.Stderr, humanOutput(env))
+	} else {
+		fmt.Fprint(os.Stdout, humanOutput(env))
+	}
+	return env.ExitCode()
 }
 
 func pickSource(demo bool, config, binary string) (Source, CliSource) {
@@ -116,6 +253,10 @@ func renderFrame(src Source, cli CliSource, page string, width, height int) int 
 	case pageDiagnostics:
 		app.onAPI(app.runCLI("cli:health", "health", []string{"check"}, "health"))
 		app.diagTitle = "health check"
+	case pageOverview:
+		if env, err := cli.Run("status"); err == nil {
+			app.onAPI(apiMsg{kind: "cli:status:overview", data: env.Data, overall: env.Overall})
+		}
 	}
 	app.draw()
 	fmt.Print(app.scr.DumpPlain())

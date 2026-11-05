@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "provenance": "Maintainer pins recorded from the official GitHub releases API asset digest field at review time. Not an upstream signature: official mihomo releases publish no signatures or checksum files.",
+  "pins": [
+    {
+      "version": "v1.19.33",
+      "asset": "mihomo-linux-amd64-compatible-v1.19.33.gz",
+      "sha256": "386508bfb1c72c43b6a0eda73708ecdce82546581b0ebcb16366c53757c622b6",
+      "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-amd64-compatible-v1.19.33.gz",
+      "source": "GitHub releases API asset digest (verified 2026-11-01)",
+      "reviewed_by": "maintainer",
+      "reviewed_at": "2026-11-01"
+    },
+    {
+      "version": "v1.19.32",
+      "asset": "mihomo-linux-amd64-compatible-v1.19.32.gz",
+      "sha256": "ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20",
+      "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-linux-amd64-compatible-v1.19.32.gz",
+      "source": "GitHub releases API asset digest (verified 2026-10-11)",
+      "reviewed_by": "maintainer",
+      "reviewed_at": "2026-10-11"
+    },
+    {
+      "version": "v1.19.33",
+      "asset": "mihomo-linux-arm64-v1.19.33.gz",
+      "sha256": "ba408b317080ee265c46cb923a50018c1b82cbd708551cdd46a1e3e307396187",
+      "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-arm64-v1.19.33.gz",
+      "source": "Official GitHub releases API get_release_by_tag v1.19.33, asset size 20824326; verified through GitHub connector this session by coordinator on 2026-11-05",
+      "reviewed_by": "coordinator (verified this session)",
+      "reviewed_at": "2026-11-05"
+    }
+  ]
+}

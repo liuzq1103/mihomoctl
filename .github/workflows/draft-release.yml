@@ -1,0 +1,82 @@
+name: Three-model reviewed draft candidate
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact commit covered by checked-in .github/release-evidence.json
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  source-reviews:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - name: Validate checked-in evidence for three completed model passes
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          git ls-files --error-unmatch .github/release-evidence.json
+          go run ./scripts/reviewgate -evidence .github/release-evidence.json -candidate "$CANDIDATE_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-source-review
+          path: |
+            .github/release-evidence.json
+            .github/reviews/
+          include-hidden-files: true
+  validate:
+    needs: source-reviews
+    uses: ./.github/workflows/release-validation.yml
+    with:
+      candidate_sha: ${{ inputs.candidate_sha }}
+  candidate:
+    needs: [source-reviews, validate]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - name: Require exact clean candidate
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          if git ls-remote --exit-code origin refs/tags/v0.2.0 > /tmp/tag-ref; then
+            git fetch origin refs/tags/v0.2.0:refs/tags/v0.2.0
+            test "$(git rev-parse 'refs/tags/v0.2.0^{commit}')" = "$CANDIDATE_SHA"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-source-review
+          path: .review
+      - name: Build source/basic/offline candidates for both reviewed cores
+        run: go run ./scripts/release -out dist/draft -arch amd64,arm64 -offline
+      - name: Stage draft assets only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          cp .review/release-evidence.json dist/draft/source-review.json
+          tar -czf dist/draft/source-review-evidence.tar.gz -C .review .
+          printf '%s\n' "Commit: $CANDIDATE_SHA" \
+            'Three completed model source reviews and the full CI matrix passed.' \
+            'Draft only. Public publication is a separate agent action after actual asset reviews.' \
+            'No human approval environment is required by this workflow.' > dist/draft/review.txt
+          if gh release view v0.2.0 --json isDraft --jq .isDraft > /tmp/is-draft; then
+            test "$(cat /tmp/is-draft)" = true
+            echo 'Draft already exists; automatic replacement is refused.' >&2
+            exit 1
+          fi
+          gh release create v0.2.0 dist/draft/* --draft --target "$CANDIDATE_SHA" \
+            --title 'mihomoctl-go 0.2.0 candidate' --notes-file dist/draft/review.txt

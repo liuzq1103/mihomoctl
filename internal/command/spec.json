@@ -1,0 +1,3338 @@
+[
+  {
+    "command": [
+      "init"
+    ],
+    "options": [
+      {
+        "name": "core",
+        "flags": [
+          "--core"
+        ],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "trusted Mihomo executable; does not download a core"
+      },
+      {
+        "name": "port",
+        "flags": [
+          "--port"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "int",
+        "help": "explicit authenticated loopback proxy port; otherwise allocate per user"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "allow_non_loopback",
+        "flags": [
+          "--allow-non-loopback"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "authorize this exact non-loopback address (repeatable; no firewall changes)",
+        "repeat": true
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Initialize a user-scoped runtime configuration.\n\nEffects: Writes private manager/configuration/credentials; no download or start. Existing state is preserved."
+  },
+  {
+    "command": [
+      "start"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Start the managed Mihomo runtime.\n\nEffects: Starts only the owned runtime. May allocate authenticated loopback ports."
+  },
+  {
+    "command": [
+      "stop"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Stop the managed runtime.\n\nEffects: Stops only the owned runtime; interrupts its proxy connections."
+  },
+  {
+    "command": [
+      "restart"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Restart to apply saved configuration.\n\nEffects: Stops and starts the owned runtime to apply saved configuration."
+  },
+  {
+    "command": [
+      "status"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Show runtime facts and evidence.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "logs"
+    ],
+    "options": [
+      {
+        "name": "lines",
+        "flags": [
+          "--lines"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "int",
+        "help": "maximum log lines (default: 50)"
+      },
+      {
+        "name": "follow",
+        "flags": [
+          "--follow"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "stream logs until interrupted"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Read managed runtime logs.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "config",
+      "validate"
+    ],
+    "options": [
+      {
+        "name": "file",
+        "flags": [
+          "--file"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "configuration file to validate"
+      },
+      {
+        "name": "profile",
+        "flags": [
+          "--profile"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "named manager profile; mutually exclusive with --binding"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Validate the active or specified configuration.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "config",
+      "check"
+    ],
+    "options": [
+      {
+        "name": "file",
+        "flags": [
+          "--file"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "configuration file to validate"
+      },
+      {
+        "name": "profile",
+        "flags": [
+          "--profile"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "named manager profile; mutually exclusive with --binding"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Validate the active or specified configuration.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "profile",
+      "list"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect and select proxy profiles.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "profile",
+      "show"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Inspect and select proxy profiles.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "profile",
+      "validate"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Inspect and select proxy profiles.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "profile",
+      "set-default"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Inspect and select proxy profiles.\n\nEffects: Saves the manager default profile; existing processes keep their environment."
+  },
+  {
+    "command": [
+      "env",
+      "show"
+    ],
+    "options": [
+      {
+        "name": "profile",
+        "flags": [
+          "--profile"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "named manager profile; mutually exclusive with --binding"
+      },
+      {
+        "name": "binding",
+        "flags": [
+          "--binding"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "declared integration binding"
+      },
+      {
+        "name": "reveal",
+        "flags": [
+          "--reveal"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicitly expose credentials; never upload or log this output"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Show or export scoped proxy variables.\n\nEffects: Read-only and redacted by default. --reveal explicitly exposes credentials."
+  },
+  {
+    "command": [
+      "env",
+      "export"
+    ],
+    "options": [
+      {
+        "name": "profile",
+        "flags": [
+          "--profile"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "named manager profile; mutually exclusive with --binding"
+      },
+      {
+        "name": "binding",
+        "flags": [
+          "--binding"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "declared integration binding"
+      },
+      {
+        "name": "output",
+        "flags": [
+          "--output"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "private output file; writes credentials with mode 0600"
+      },
+      {
+        "name": "reveal",
+        "flags": [
+          "--reveal"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicitly expose credentials; never upload or log this output"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [
+      {
+        "required": true,
+        "names": [
+          "output",
+          "reveal"
+        ]
+      }
+    ],
+    "description": "Show or export scoped proxy variables.\n\nEffects: Writes a private environment file; --reveal explicitly prints credentials instead. Does not modify the caller shell."
+  },
+  {
+    "command": [
+      "exec"
+    ],
+    "options": [
+      {
+        "name": "profile",
+        "flags": [
+          "--profile"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "named manager profile; mutually exclusive with --binding"
+      },
+      {
+        "name": "binding",
+        "flags": [
+          "--binding"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "declared integration binding"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Run a child with a selected proxy environment.\n\nEffects: After local health passes, replaces this process with COMMAND and injects private proxy variables into that child only. Child exit/signal semantics are preserved."
+  },
+  {
+    "command": [
+      "direct"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Run a child with proxy variables removed.\n\nEffects: Replaces this process with COMMAND after removing proxy variables from that child only."
+  },
+  {
+    "command": [
+      "integration",
+      "list"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect and export declarative application bindings.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "integration",
+      "show"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Inspect and export declarative application bindings.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "integration",
+      "check"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Inspect and export declarative application bindings.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "integration",
+      "export"
+    ],
+    "options": [
+      {
+        "name": "output_dir",
+        "flags": [
+          "--output-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "destination directory; exported files may contain credentials"
+      },
+      {
+        "name": "reveal",
+        "flags": [
+          "--reveal"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicitly expose credentials; never upload or log this output"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Inspect and export declarative application bindings.\n\nEffects: Writes declared integration files, which may contain private credentials; no third-party restart."
+  },
+  {
+    "command": [
+      "integration",
+      "install"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Inspect and export declarative application bindings.\n\nEffects: Installs only the declared owned integration files; no third-party restart."
+  },
+  {
+    "command": [
+      "integration",
+      "remove"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Inspect and export declarative application bindings.\n\nEffects: Removes only receipt-owned integration files; no third-party restart."
+  },
+  {
+    "command": [
+      "service",
+      "install"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage the owned systemd service.\n\nEffects: Explicit optional systemd backend operations; process mode does not require systemd. Install/start/stop/restart/uninstall affect only the owned service."
+  },
+  {
+    "command": [
+      "service",
+      "start"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage the owned systemd service.\n\nEffects: Explicit optional systemd backend operations; process mode does not require systemd. Install/start/stop/restart/uninstall affect only the owned service."
+  },
+  {
+    "command": [
+      "service",
+      "stop"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage the owned systemd service.\n\nEffects: Explicit optional systemd backend operations; process mode does not require systemd. Install/start/stop/restart/uninstall affect only the owned service."
+  },
+  {
+    "command": [
+      "service",
+      "restart"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage the owned systemd service.\n\nEffects: Explicit optional systemd backend operations; process mode does not require systemd. Install/start/stop/restart/uninstall affect only the owned service."
+  },
+  {
+    "command": [
+      "service",
+      "status"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage the owned systemd service.\n\nEffects: Explicit optional systemd backend operations; process mode does not require systemd. Install/start/stop/restart/uninstall affect only the owned service."
+  },
+  {
+    "command": [
+      "service",
+      "uninstall"
+    ],
+    "options": [
+      {
+        "name": "dry_run",
+        "flags": [
+          "--dry-run"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "preview without applying the requested change"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage the owned systemd service.\n\nEffects: Explicit optional systemd backend operations; process mode does not require systemd. Install/start/stop/restart/uninstall affect only the owned service."
+  },
+  {
+    "command": [
+      "tun",
+      "status"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect or change explicit TUN settings.\n\nEffects: Inspection is read-only; enable/disable require explicit --system and administrator authorization. Never self-elevates."
+  },
+  {
+    "command": [
+      "tun",
+      "enable"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect or change explicit TUN settings.\n\nEffects: Inspection is read-only; enable/disable require explicit --system and administrator authorization. Never self-elevates."
+  },
+  {
+    "command": [
+      "tun",
+      "disable"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect or change explicit TUN settings.\n\nEffects: Inspection is read-only; enable/disable require explicit --system and administrator authorization. Never self-elevates."
+  },
+  {
+    "command": [
+      "core",
+      "install"
+    ],
+    "options": [
+      {
+        "name": "version",
+        "flags": [
+          "--version"
+        ],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit pinned version vX.Y.Z"
+      },
+      {
+        "name": "sha256",
+        "flags": [
+          "--sha256"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "expected SHA-256 from the reviewed input or preview"
+      },
+      {
+        "name": "dry_run",
+        "flags": [
+          "--dry-run"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "preview without applying the requested change"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      },
+      {
+        "name": "asset",
+        "flags": [
+          "--asset"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "reviewed local compressed core asset; embedded digest remains mandatory"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Install, adopt or list Mihomo binaries.\n\nEffects: Acquires and verifies an explicit fixed core version. Does not start it or replace an active core."
+  },
+  {
+    "command": [
+      "core",
+      "update"
+    ],
+    "options": [
+      {
+        "name": "version",
+        "flags": [
+          "--version"
+        ],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit pinned version vX.Y.Z"
+      },
+      {
+        "name": "sha256",
+        "flags": [
+          "--sha256"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "expected SHA-256 from the reviewed input or preview"
+      },
+      {
+        "name": "dry_run",
+        "flags": [
+          "--dry-run"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "preview without applying the requested change"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      },
+      {
+        "name": "asset",
+        "flags": [
+          "--asset"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "reviewed local compressed core asset; embedded digest remains mandatory"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Install, adopt or list Mihomo binaries.\n\nEffects: Installs an explicitly selected verified core; active-core replacement remains explicit."
+  },
+  {
+    "command": [
+      "core",
+      "adopt"
+    ],
+    "options": [
+      {
+        "name": "path",
+        "flags": [
+          "--path"
+        ],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "trusted existing executable to adopt"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Install, adopt or list Mihomo binaries.\n\nEffects: Records a trusted existing binary; does not copy or download it."
+  },
+  {
+    "command": [
+      "core",
+      "list"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Install, adopt or list Mihomo binaries.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "health"
+    ],
+    "options": [
+      {
+        "name": "profile",
+        "flags": [
+          "--profile"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "named manager profile; mutually exclusive with --binding"
+      },
+      {
+        "name": "binding",
+        "flags": [
+          "--binding"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "declared integration binding"
+      },
+      {
+        "name": "egress_url",
+        "flags": [
+          "--egress-url"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "optional public HTTPS probe; does not prove another application used the proxy"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Check runtime readiness and proxy access.\n\nEffects: Probes local authenticated listeners; an explicit egress URL sends an external request. Does not prove another application used a remote node."
+  },
+  {
+    "command": [
+      "doctor"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Diagnose configuration and runtime prerequisites.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "migrate"
+    ],
+    "options": [
+      {
+        "name": "dry_run",
+        "flags": [
+          "--dry-run"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "preview without applying the requested change"
+      },
+      {
+        "name": "apply",
+        "flags": [
+          "--apply"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "apply only after reviewing the preview and obtaining explicit authorization"
+      },
+      {
+        "name": "remove_loader",
+        "flags": [
+          "--remove-loader"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicitly remove the reviewed legacy shell loader"
+      },
+      {
+        "name": "no_import",
+        "flags": [
+          "--no-import"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "migrate without importing the legacy configuration"
+      },
+      {
+        "name": "core",
+        "flags": [
+          "--core"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "trusted Mihomo executable; does not download a core"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [
+      {
+        "required": true,
+        "names": [
+          "dry_run",
+          "apply"
+        ]
+      }
+    ],
+    "description": "Preview or apply migration from the legacy layout.\n\nEffects: Preview with --dry-run. --apply changes owned legacy configuration; --remove-loader explicitly changes the reviewed legacy loader."
+  },
+  {
+    "command": [
+      "reset"
+    ],
+    "options": [
+      {
+        "name": "dry_run",
+        "flags": [
+          "--dry-run"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "preview without applying the requested change"
+      },
+      {
+        "name": "apply",
+        "flags": [
+          "--apply"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "apply only after reviewing the preview and obtaining explicit authorization"
+      },
+      {
+        "name": "core",
+        "flags": [
+          "--core"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "trusted Mihomo executable; does not download a core"
+      },
+      {
+        "name": "plan_sha256",
+        "flags": [
+          "--plan-sha256"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "reset preview digest; required with --apply; stale state requires a new preview"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [
+      {
+        "required": true,
+        "names": [
+          "dry_run",
+          "apply"
+        ]
+      }
+    ],
+    "description": "Restore the managed runtime to its initial defaults.\n\nEffects: DESTRUCTIVE: replaces configuration and credentials and stops the owned runtime. First use --dry-run; only after explicit human authorization use --apply --plan-sha256 HASH. Runtime state changes invalidate the preview. No historical rollback."
+  },
+  {
+    "command": [
+      "rollback"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "backup",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "historical rollback is disabled"
+      }
+    ],
+    "exclusive": [],
+    "description": "Historical rollback is not supported.\n\nEffects: Historical rollback is disabled. Unfinished transaction recovery remains available automatically."
+  },
+  {
+    "command": [
+      "release",
+      "check"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Check or fetch release artifacts.\n\nEffects: Queries official stable-release metadata; does not install or prove the current version is latest."
+  },
+  {
+    "command": [
+      "release",
+      "fetch"
+    ],
+    "options": [
+      {
+        "name": "output_dir",
+        "flags": [
+          "--output-dir"
+        ],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "destination directory; exported files may contain credentials"
+      },
+      {
+        "name": "version",
+        "flags": [
+          "--version"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit pinned version vX.Y.Z"
+      },
+      {
+        "name": "target",
+        "flags": [
+          "--target"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": [
+          "linux-amd64",
+          "linux-arm64",
+          "linux-x86_64",
+          "linux-aarch64",
+          "ubuntu22.04-x86_64-py310",
+          "ubuntu24.04-x86_64-py312"
+        ],
+        "type": "string",
+        "help": "explicit validated release platform"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      },
+      {
+        "name": "sha256",
+        "flags": [
+          "--sha256"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit sha256"
+      },
+      {
+        "name": "kind",
+        "flags": [
+          "--kind"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit kind"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Check or fetch release artifacts.\n\nEffects: Downloads and validates official assets into the explicit output directory; does not install."
+  },
+  {
+    "command": [
+      "update"
+    ],
+    "options": [
+      {
+        "name": "dry_run",
+        "flags": [
+          "--dry-run"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "preview without applying the requested change"
+      },
+      {
+        "name": "latest",
+        "flags": [
+          "--latest"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "fetch a reviewed stable release from the official repository"
+      },
+      {
+        "name": "allow_same_version",
+        "flags": [
+          "--allow-same-version"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicitly allow reinstalling the installed version"
+      },
+      {
+        "name": "allow_downgrade",
+        "flags": [
+          "--allow-downgrade"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicitly authorize installing an older version"
+      },
+      {
+        "name": "wheelhouse",
+        "flags": [
+          "--wheelhouse"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "trusted local dependency wheel directory (no index access)"
+      },
+      {
+        "name": "python",
+        "flags": [
+          "--python"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "trusted existing Python interpreter"
+      },
+      {
+        "name": "extras",
+        "flags": [
+          "--extras"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "select optional dependencies (repeatable)",
+        "repeat": true
+      },
+      {
+        "name": "extras",
+        "flags": [
+          "--no-extras"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "clear optional dependencies"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      },
+      {
+        "name": "sha256",
+        "flags": [
+          "--sha256"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit sha256"
+      },
+      {
+        "name": "kind",
+        "flags": [
+          "--kind"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit kind"
+      }
+    ],
+    "args": [
+      {
+        "name": "source",
+        "flags": [],
+        "required": false,
+        "nargs": "?",
+        "choices": null,
+        "type": "string",
+        "help": "reviewed local release archive or directory"
+      }
+    ],
+    "exclusive": [
+      {
+        "required": false,
+        "names": [
+          "extras",
+          "extras"
+        ]
+      }
+    ],
+    "description": "Preview or install a reviewed release.\n\nEffects: Complete installations only: atomically replaces managed program code. Does not replace the active core. --latest downloads reviewed assets; local-source updates are offline. External Python installs must use their package manager; this command also refuses --dry-run for those installs."
+  },
+  {
+    "command": [
+      "rules",
+      "status"
+    ],
+    "options": [
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect and validate custom rule state.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "rules",
+      "check"
+    ],
+    "options": [
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect and validate custom rule state.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "version"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Show the installed CLI version.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "profiles"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "export"
+    ],
+    "options": [
+      {
+        "name": "binding",
+        "flags": [
+          "--binding"
+        ],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "declared integration binding"
+      },
+      {
+        "name": "output_dir",
+        "flags": [
+          "--output-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "destination directory; exported files may contain credentials"
+      },
+      {
+        "name": "reveal",
+        "flags": [
+          "--reveal"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicitly expose credentials; never upload or log this output"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "controller",
+      "status"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect or initialize the local controller.\n\nEffects: status is read-only; initialize/setup write private controller configuration. token reveals the secret only in a private terminal, never JSON."
+  },
+  {
+    "command": [
+      "controller",
+      "initialize"
+    ],
+    "options": [
+      {
+        "name": "port",
+        "flags": [
+          "--port"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "int",
+        "help": "explicit authenticated loopback proxy port; otherwise allocate per user"
+      },
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect or initialize the local controller.\n\nEffects: status is read-only; initialize/setup write private controller configuration. token reveals the secret only in a private terminal, never JSON."
+  },
+  {
+    "command": [
+      "controller",
+      "setup"
+    ],
+    "options": [
+      {
+        "name": "port",
+        "flags": [
+          "--port"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "int",
+        "help": "explicit authenticated loopback proxy port; otherwise allocate per user"
+      },
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "archive",
+        "flags": [
+          "--archive"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "reviewed local dashboard archive"
+      },
+      {
+        "name": "sha256",
+        "flags": [
+          "--sha256"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "expected SHA-256 from the reviewed input or preview"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect or initialize the local controller.\n\nEffects: status is read-only; initialize/setup write private controller configuration. token reveals the secret only in a private terminal, never JSON."
+  },
+  {
+    "command": [
+      "controller",
+      "token"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect or initialize the local controller.\n\nEffects: status is read-only; initialize/setup write private controller configuration. token reveals the secret only in a private terminal, never JSON."
+  },
+  {
+    "command": [
+      "nodes"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "List exact node names from the core proxy table.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "groups"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect routing groups and selected chains.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "select"
+    ],
+    "options": [
+      {
+        "name": "allow_cross_level",
+        "flags": [
+          "--allow-cross-level"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicitly authorize selecting a leaf in a group containing subgroups"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "group",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact Selector group name from groups --json"
+      },
+      {
+        "name": "node",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact unambiguous node/member name; quote spaces and Unicode"
+      }
+    ],
+    "exclusive": [],
+    "description": "Select a member of a manual group.\n\nEffects: Changes a Selector immediately; read-back confirms selection. May persist the current choice; existing connections stay open. Record the old choice first. --allow-cross-level requires explicit authorization."
+  },
+  {
+    "command": [
+      "latency"
+    ],
+    "options": [
+      {
+        "name": "provider",
+        "flags": [
+          "--provider"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact provider identity; never resolve duplicate names by guessing"
+      },
+      {
+        "name": "global_node",
+        "flags": [
+          "--global"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "use the global node identity rather than a provider identity"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "node",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact unambiguous node/member name; quote spaces and Unicode"
+      }
+    ],
+    "exclusive": [],
+    "description": "Probe one node against the public HTTPS target.\n\nEffects: Sends a public HTTPS probe through the exact node identity; may update core probe state. Not application end-to-end evidence."
+  },
+  {
+    "command": [
+      "connections"
+    ],
+    "options": [
+      {
+        "name": "details",
+        "flags": [
+          "--details"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "include sensitive connection details; do not log or share"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Inspect active connection chains.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "traffic"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Sample upload and download rates.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "subscription",
+      "preview"
+    ],
+    "options": [
+      {
+        "name": "source_file",
+        "flags": [
+          "--source-file"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "private subscription YAML file; never pass a subscription URL as an argument"
+      },
+      {
+        "name": "url_file",
+        "flags": [
+          "--url-file"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "private file containing the subscription URL"
+      },
+      {
+        "name": "stdin",
+        "flags": [
+          "--stdin"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "read subscription input from stdin"
+      },
+      {
+        "name": "policy",
+        "flags": [
+          "--policy"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": [
+          "auto",
+          "nodes",
+          "provider",
+          "policy"
+        ],
+        "type": "string",
+        "help": "subscription merge policy; preview before applying"
+      },
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Preview and apply a private subscription.\n\nEffects: Reads private input; may download subscription/provider resources; writes private temporary preview material. Does not apply configuration."
+  },
+  {
+    "command": [
+      "subscription",
+      "apply"
+    ],
+    "options": [
+      {
+        "name": "sha256",
+        "flags": [
+          "--sha256"
+        ],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "expected SHA-256 from the reviewed input or preview"
+      },
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "id",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "private preview identifier"
+      }
+    ],
+    "exclusive": [],
+    "description": "Preview and apply a private subscription.\n\nEffects: Writes the reviewed preview after digest validation. Configuration changes need explicit restart."
+  },
+  {
+    "command": [
+      "tui"
+    ],
+    "options": [
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "plain",
+        "flags": [
+          "--plain"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "human interactive plain menu"
+      },
+      {
+        "name": "engine",
+        "flags": [
+          "--engine"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": [
+          "curses",
+          "textual",
+          "plain"
+        ],
+        "type": "string",
+        "help": "human interactive frontend; plain is the terminal fallback"
+      },
+      {
+        "name": "theme",
+        "flags": [
+          "--theme"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": [
+          "dark",
+          "light"
+        ],
+        "type": "string",
+        "help": "human interface color theme"
+      },
+      {
+        "name": "ascii_only",
+        "flags": [
+          "--ascii"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "use ASCII interface characters"
+      },
+      {
+        "name": "source_stdin",
+        "flags": [
+          "--stdin"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "read subscription input from stdin"
+      },
+      {
+        "name": "policy",
+        "flags": [
+          "--policy"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": [
+          "auto",
+          "nodes",
+          "provider",
+          "policy"
+        ],
+        "type": "string",
+        "help": "subscription merge policy; preview before applying"
+      },
+      {
+        "name": "script",
+        "flags": [
+          "--script"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "trusted override script; executes code during preview"
+      },
+      {
+        "name": "details",
+        "flags": [
+          "--details"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "include sensitive connection details; do not log or share"
+      },
+      {
+        "name": "flclash_compat",
+        "flags": [
+          "--flclash-compat"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicit compatibility mode for a trusted FlClash script"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Open the interactive console.\n\nEffects: INTERACTIVE HUMAN OPERATION ONLY. May initialize, save configuration or change the runtime after confirmation. Agents must use explicit CLI commands."
+  },
+  {
+    "command": [
+      "providers"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "List proxy providers and their state.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "provider",
+      "refresh"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Request a proxy provider refresh.\n\nEffects: Requests a provider download/refresh; response confirms the request, not refresh completion."
+  },
+  {
+    "command": [
+      "dns"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      },
+      {
+        "name": "record",
+        "flags": [],
+        "required": false,
+        "nargs": "?",
+        "choices": null,
+        "type": "string",
+        "help": "DNS record type (default: A)"
+      }
+    ],
+    "exclusive": [],
+    "description": "Query DNS through the controller.\n\nEffects: Sends a DNS query through the local owned controller."
+  },
+  {
+    "command": [
+      "mode"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "mode",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": [
+          "rule",
+          "global",
+          "direct"
+        ],
+        "type": "string",
+        "help": "running-core routing mode; existing connections remain open"
+      }
+    ],
+    "exclusive": [],
+    "description": "Change the running core routing mode.\n\nEffects: Changes running-core routing mode immediately; does not save configuration or close existing connections."
+  },
+  {
+    "command": [
+      "health-check"
+    ],
+    "options": [
+      {
+        "name": "apply",
+        "flags": [
+          "--apply"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "apply only after reviewing the preview and obtaining explicit authorization"
+      },
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "url",
+        "flags": [
+          "--url"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "public HTTPS health-check target"
+      },
+      {
+        "name": "expected_status",
+        "flags": [
+          "--expected-status"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "accepted probe HTTP status range"
+      },
+      {
+        "name": "interval",
+        "flags": [
+          "--interval"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "int",
+        "help": "probe interval in seconds"
+      },
+      {
+        "name": "timeout",
+        "flags": [
+          "--timeout"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "int",
+        "help": "probe timeout in milliseconds"
+      },
+      {
+        "name": "lazy",
+        "flags": [
+          "--lazy"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": [
+          "true",
+          "false"
+        ],
+        "type": "string",
+        "help": "whether the core may defer idle-group probes"
+      },
+      {
+        "name": "tolerance",
+        "flags": [
+          "--tolerance"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "int",
+        "help": "URLTest switching tolerance in milliseconds"
+      },
+      {
+        "name": "preset",
+        "flags": [
+          "--preset"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": [
+          "resilient"
+        ],
+        "type": "string",
+        "help": "explicit probe settings preset"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "kind",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": [
+          "group",
+          "provider"
+        ],
+        "type": "string",
+        "help": "group or provider probe settings"
+      },
+      {
+        "name": "name",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact configured name"
+      }
+    ],
+    "exclusive": [],
+    "description": "Preview or save group/provider probe settings.\n\nEffects: Preview by default; --apply saves probe settings. Explicit restart required."
+  },
+  {
+    "command": [
+      "manual"
+    ],
+    "options": [
+      {
+        "name": "apply",
+        "flags": [
+          "--apply"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "apply only after reviewing the preview and obtaining explicit authorization"
+      },
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [
+      {
+        "name": "group",
+        "flags": [],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "exact Selector group name from groups --json"
+      }
+    ],
+    "exclusive": [],
+    "description": "Preview conversion to a manual routing group.\n\nEffects: Preview by default; --apply converts the group to a Selector in saved configuration. Explicit restart required."
+  },
+  {
+    "command": [
+      "override"
+    ],
+    "options": [
+      {
+        "name": "script",
+        "flags": [
+          "--script"
+        ],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "trusted override script; executes code during preview"
+      },
+      {
+        "name": "apply",
+        "flags": [
+          "--apply"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "apply only after reviewing the preview and obtaining explicit authorization"
+      },
+      {
+        "name": "flclash_compat",
+        "flags": [
+          "--flclash-compat"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "explicit compatibility mode for a trusted FlClash script"
+      },
+      {
+        "name": "home_dir",
+        "flags": [
+          "--home-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit private Mihomo data directory"
+      },
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Preview a trusted routing script.\n\nEffects: Executes the explicitly trusted script for preview; --apply writes its reviewed configuration. Explicit restart required."
+  },
+  {
+    "command": [
+      "ui"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Show the configured dashboard access URL.\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "dashboard"
+    ],
+    "options": [
+      {
+        "name": "config",
+        "flags": [
+          "--config"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit core YAML file (private, same scope)"
+      },
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": 0,
+        "choices": null,
+        "type": "bool",
+        "help": "emit the mihomoctl/v1 JSON envelope"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "\n\nEffects: Read-only inspection; default output omits credentials."
+  },
+  {
+    "command": [
+      "installation",
+      "install"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "bool",
+        "help": "explicit json"
+      },
+      {
+        "name": "source",
+        "flags": [
+          "--source"
+        ],
+        "required": true,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit source"
+      },
+      {
+        "name": "bin_dir",
+        "flags": [
+          "--bin-dir"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "string",
+        "help": "explicit bin dir"
+      },
+      {
+        "name": "dry_run",
+        "flags": [
+          "--dry-run"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "bool",
+        "help": "explicit dry run"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage this independent Go installation; configuration and active core are preserved."
+  },
+  {
+    "command": [
+      "installation",
+      "status"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "bool",
+        "help": "explicit json"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage this independent Go installation; configuration and active core are preserved."
+  },
+  {
+    "command": [
+      "installation",
+      "recover"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "bool",
+        "help": "explicit json"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage this independent Go installation; configuration and active core are preserved."
+  },
+  {
+    "command": [
+      "installation",
+      "uninstall"
+    ],
+    "options": [
+      {
+        "name": "json",
+        "flags": [
+          "--json"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "bool",
+        "help": "explicit json"
+      },
+      {
+        "name": "dry_run",
+        "flags": [
+          "--dry-run"
+        ],
+        "required": false,
+        "nargs": null,
+        "choices": null,
+        "type": "bool",
+        "help": "explicit dry run"
+      }
+    ],
+    "args": [],
+    "exclusive": [],
+    "description": "Manage this independent Go installation; configuration and active core are preserved."
+  }
+]

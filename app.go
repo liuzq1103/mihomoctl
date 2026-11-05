@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -30,20 +31,52 @@ var pageOrder = []string{
 	pageLogs, pageProfile, pageProviders, pageDiagnostics, pageRuntime,
 }
 
+// pageAliases keeps the retained identifiers working. "profiles" is the old
+// name of the subscription page; the profile page (代理档案与接入声明) is a
+// genuinely different destination and keeps its own name.
+var pageAliases = map[string]string{
+	"profiles": pageSubscriptions,
+}
+
+// resolvePage maps a retained page identifier onto the canonical one.
+func resolvePage(page string) string {
+	if alias, ok := pageAliases[page]; ok {
+		return alias
+	}
+	return page
+}
+
 var pageNames = map[string]string{
 	pageOverview: "首页", pageProxies: "节点", pageSubscriptions: "订阅", pageConnections: "连接",
 	pageRules: "规则", pageLogs: "日志", pageProfile: "接入", pageProviders: "提供商",
 	pageDiagnostics: "诊断", pageRuntime: "服务",
 }
 
+// groupTypeNames matches the Textual console's group vocabulary.
 var groupTypeNames = map[string]string{
-	"Selector": "手动", "URLTest": "自动", "Fallback": "转移", "LoadBalance": "负载", "Relay": "链式",
+	"Selector": "手动选择", "URLTest": "自动测速", "Fallback": "故障转移",
+	"LoadBalance": "负载均衡", "Relay": "链式",
 }
 
-var policyOrder = []string{"auto", "provider", "nodes", "policy"}
+var policyOrder = []string{"simple", "provider", "nodes", "policy", "auto"}
 var policyNames = map[string]string{
-	"auto": "自动判断", "provider": "订阅完整策略", "nodes": "仅合并节点", "policy": "仅叠加策略",
+	"simple": "简单节点选择", "provider": "订阅完整策略", "nodes": "仅合并节点",
+	"policy": "仅叠加策略", "auto": "自动判断（按内容）",
 }
+
+// policyHelp explains what each import policy actually does. "simple" is not
+// an alias of "auto": it is the guided import that decides between a full
+// provider import and a nodes-only merge by looking at the local config.
+var policyHelp = map[string]string{
+	"simple":   "引导导入：本地仍是简单结构时导入节点并生成单一 Proxy 分组；本地已有路由策略时只合并节点，保留现有分组与规则。",
+	"provider": "采用订阅自带的节点、分组和规则；缺少的策略字段会被清空（预览下方显示移除数量）。",
+	"nodes":    "只按同名替换 proxies，分组与规则保留；订阅只含顶层 proxies 时使用。",
+	"policy":   "只叠加订阅的策略（分组、规则），保留本地节点与 provider。",
+	"auto":     "按订阅内容自动判断：含路由字段则整份导入，否则只合并节点。",
+}
+
+// logLevels are the levels the log stream can be opened at.
+var logLevels = []string{"debug", "info", "warning", "error"}
 
 // refresh intervals per page, in seconds; streamed or manual pages are absent.
 var pageInterval = map[string]float64{
@@ -74,6 +107,8 @@ type apiMsg struct {
 	cliKind string
 	lines   []string
 	preview map[string]any
+	data    map[string]any
+	overall string
 	applyOK bool
 
 	// Batch probe completion: which nodes never started, how many finished.
@@ -91,6 +126,18 @@ type apiMsg struct {
 	// subSeq ties a subscription preview to the request that launched it,
 	// so a stale result never installs after the user re-previews.
 	subSeq int
+	// generation ties a stream open to the stream generation that asked
+	// for it, so a late result from a closed stream is never adopted.
+	generation int
+	// policyFallback explains a preview that ran with another import
+	// policy than the one that was requested.
+	policyFallback string
+	// policySent is the import policy the console actually sent, which is
+	// not always the chosen one: a service that does not know the guided
+	// policy gets "auto" instead.
+	policySent string
+	// guided reports that the service resolved the guided import itself.
+	guided bool
 }
 
 // pendingAction is a modal confirm; destructive verbs need one explicit key.
@@ -123,6 +170,21 @@ type App struct {
 	quit  bool
 	dirty bool
 
+	// theme and ascii are the presentation switches the Textual console
+	// exposes as --theme and --ascii.
+	theme  Theme
+	ascii  bool
+	layout layout
+
+	// details includes the sensitive connection details (the rule payload).
+	// They stay hidden unless the operator asks for them.
+	details bool
+
+	// script is the trusted override script (--script) and flclash is the
+	// explicit FlClash compatibility mode for it (--flclash-compat).
+	script  string
+	flclash bool
+
 	apiCh     chan apiMsg
 	inflight  map[string]bool
 	lastFetch map[string]time.Time
@@ -150,9 +212,8 @@ type App struct {
 	conns   []Conn
 	connOff int
 
-	logs      []LogLine
-	logOff    int
-	logPaused bool
+	logs   []LogLine
+	logOff int
 
 	ruleCounts []ruleCount
 	ruleProv   []RuleProvider
@@ -167,6 +228,24 @@ type App struct {
 	logCh     <-chan LogLine
 	streamCtx context.Context
 	cancelAll context.CancelFunc
+
+	// Each stream owns its own cancel: leaving the logs page must not stop
+	// the traffic stream, and vice versa.
+	trafficCtx    context.Context
+	trafficCancel context.CancelFunc
+	logCtx        context.Context
+	logCancel     context.CancelFunc
+
+	// logLevel is the level the log stream is opened at. Changing it
+	// restarts the stream, because the level is part of the request.
+	logLevel string
+
+	// logGen and trafficGen number the stream opens, so a late result from
+	// a stream that was closed in the meantime is never adopted. Each
+	// stream has its own counter, so opening one never invalidates the
+	// other.
+	logGen     int
+	trafficGen int
 
 	// Reconnect backoff for dropped streams (controller restart, suspend):
 	// a closed stream nils its channel in Run, onTick reopens it after this
@@ -184,6 +263,29 @@ type App struct {
 	notice   string
 	noticeAt time.Time
 
+	// picker is the options overlay (theme, log level, character set).
+	picker *picker
+
+	// paused freezes the page's automatic refresh, like the Textual
+	// console's p binding on the logs and connections pages.
+	paused bool
+
+	// exitRequested defers the exit until the running operation finishes,
+	// so a confirmed action is never cut in half by the quit key.
+	exitRequested bool
+
+	// overviewData is the service status the overview page shows: the
+	// controller state, the pending restart and the unavailable features.
+	// It arrives asynchronously, so the page never waits for it.
+	overviewData map[string]any
+	// overviewErr is the last status failure; the overview shows it in
+	// place of the status instead of the status bar.
+	overviewErr string
+	// pendingRestart records that a change was saved but is not in effect
+	// yet. The service reports it in the status document as well; the
+	// console keeps it for the operations that only write the file.
+	pendingRestart bool
+
 	// Subscription flow: source selection, policy, current preview.
 	subKind    string // "url" or "file"
 	subPolicy  string
@@ -192,12 +294,31 @@ type App struct {
 	subID      string
 	subSHA     string
 	subBusy    bool
+	// subEffective is the policy the backend actually applied, which can
+	// differ from the requested one (the guided "simple" import resolves
+	// against the local configuration).
+	subEffective string
+	// subRequested is the policy the console asked for.
+	subRequested string
+	// subSent is the policy the console really sent: a service that does
+	// not know the guided policy receives "auto" instead of "simple".
+	subSent string
+	// subGuided reports that the service resolved the guided import, so
+	// the page can say which of the two guided outcomes it was.
+	subGuided bool
+	// subFallback carries the loud report of a guided import that the
+	// local service could not perform.
+	subFallback string
+	// subPolicyNote explains a fallback: the guided import was requested
+	// but the local service cannot perform it.
+	subPolicyNote string
 	// subSeq invalidates in-flight previews: any result whose seq does not
 	// match was launched for an older URL/policy and must be discarded.
 	subSeq int
 
 	// CLI-backed pages.
 	runtimeDoc  []string
+	runtimeData map[string]any
 	rtOff       int
 	profileRows []string
 	diagRows    []string
@@ -232,13 +353,36 @@ func NewApp(src Source, cli CliSource, w, h int, page string, demo bool) *App {
 		page: page, apiCh: make(chan apiMsg, 64),
 		inflight: map[string]bool{}, lastFetch: map[string]time.Time{},
 		errs: map[string]string{}, delays: map[string]string{}, testing: map[string]bool{},
-		focus: 1, subKind: "url", subPolicy: "auto", nodeProvider: map[string]string{},
+		focus: 1, subKind: "url", subPolicy: "simple", nodeProvider: map[string]string{},
+		theme: ThemeDark, logLevel: "info",
 	}
+	app.layout = computeLayout(w, h)
 	app.streamCtx, app.cancelAll = context.WithCancel(context.Background())
+	app.page = resolvePage(app.page)
 	if _, ok := pageNames[app.page]; !ok {
 		app.page = pageOverview
 	}
 	return app
+}
+
+// SetDetails includes the sensitive connection details in the connections
+// view.
+//
+// The console hides them by default: the source projects every connection
+// down to the fields a human may read, and only an explicit request adds
+// the rule payload back. The setting reaches the source through its
+// optional capability, so a source that cannot show the details simply
+// keeps hiding them.
+//
+// The main program calls this once, right after NewApp:
+//
+//	app.SetDetails(details)
+func (app *App) SetDetails(enabled bool) {
+	app.details = enabled
+	if source, ok := app.src.(ConnectionDetailsSource); ok {
+		source.SetConnectionDetails(enabled)
+	}
+	app.dirty = true
 }
 
 // post launches one fetch; the kind doubles as the dedupe key so a slow
@@ -263,6 +407,7 @@ func (app *App) refresh(page string) {
 			c, err := app.src.Connections()
 			return apiMsg{kind: "connections", err: err, conns: &c}
 		})
+		app.refreshOverviewStatus()
 	case pageProxies:
 		app.post("proxies", func() apiMsg { p, err := app.src.Proxies(); return apiMsg{kind: "proxies", err: err, proxies: &p} })
 		app.post("proxy-providers", func() apiMsg {
@@ -293,15 +438,10 @@ func (app *App) refresh(page string) {
 		// Mark intent at request time: a failed first open must also be
 		// retried by onTick, not only drops of an established stream.
 		app.logsOpened = true
-		if app.logCh == nil {
-			app.post("logs-open", func() apiMsg {
-				ch, err := app.src.StartLogs(app.streamCtx)
-				return apiMsg{kind: "logs-open", err: err, logs: ch}
-			})
-		}
+		app.openLogStream()
 	case pageRuntime:
 		app.post("cli:status", func() apiMsg {
-			msg := app.runCLI("cli:status", "status", nil, "status")
+			msg := app.readStatusCLI()
 			msg.silent = true // auto refresh: errors stay in the status bar
 			return msg
 		})
@@ -314,13 +454,111 @@ func (app *App) refresh(page string) {
 	}
 }
 
-func (app *App) openTraffic() {
-	if app.trafficCh == nil {
-		app.post("traffic-open", func() apiMsg {
-			ch, err := app.src.StartTraffic(app.streamCtx)
-			return apiMsg{kind: "traffic-open", err: err, traffic: ch}
-		})
+// openLogStream opens the log stream at the current level. An established
+// stream is never opened twice: the level is part of the request, so a level
+// change closes the stream first and then reopens it.
+//
+// Every open carries its own key and generation: a stream that was closed
+// while its open was still in flight must not block the new open, and its
+// late result must never be adopted.
+func (app *App) openLogStream() {
+	if app.logCh != nil {
+		return
 	}
+	if app.logCancel != nil {
+		app.logCancel()
+		app.logCancel = nil
+	}
+	ctx, cancel := context.WithCancel(app.streamCtx)
+	app.logCtx, app.logCancel = ctx, cancel
+	// A failed open waits for the backoff instead of retrying every tick.
+	app.logsRetryAt = time.Now().Add(5 * time.Second)
+	level := app.logLevel
+	app.logGen++
+	generation := app.logGen
+	kind := fmt.Sprintf("logs-open:%d", generation)
+	app.lastFetch["logs-open"] = time.Now()
+	app.post(kind, func() apiMsg {
+		ch, err := app.startLogs(ctx, level)
+		return apiMsg{kind: kind, err: err, logs: ch, generation: generation}
+	})
+}
+
+// startLogs opens the log stream, using the level-aware route when the
+// source supports it and the plain one otherwise.
+func (app *App) startLogs(ctx context.Context, level string) (<-chan LogLine, error) {
+	if leveled, ok := app.src.(LogLevelSource); ok {
+		return leveled.StartLogsAt(ctx, level)
+	}
+	return app.src.StartLogs(ctx)
+}
+
+// closeLogStream stops the log stream. The logs page owns the stream: it
+// runs only while the page is open, exactly like the Textual console.
+// Closing also invalidates a pending open, so a result that arrives after
+// the page was left is never adopted.
+func (app *App) closeLogStream() {
+	app.logGen++
+	if app.logCancel != nil {
+		app.logCancel()
+		app.logCancel = nil
+	}
+	app.logCh = nil
+	app.logsOpened = false
+}
+
+// setLogLevel changes the level the log stream runs at and restarts the
+// stream, because the level is part of the stream request.
+func (app *App) setLogLevel(level string) {
+	if !slices.Contains(logLevels, level) {
+		app.setNotice("日志级别必须是 debug|info|warning|error")
+		return
+	}
+	if level == app.logLevel {
+		app.setNotice("日志级别：" + level + "（未变化）")
+		return
+	}
+	app.logLevel = level
+	app.closeLogStream()
+	if app.page == pageLogs {
+		app.refresh(pageLogs) // reopen at the new level
+	}
+	app.setNotice("日志级别：" + level)
+	app.dirty = true
+}
+
+// openTraffic opens the traffic stream. Only the overview page shows
+// traffic, so the stream belongs to that page and stops with it.
+func (app *App) openTraffic() {
+	if app.trafficCh != nil {
+		return
+	}
+	if app.trafficCancel != nil {
+		app.trafficCancel()
+		app.trafficCancel = nil
+	}
+	ctx, cancel := context.WithCancel(app.streamCtx)
+	app.trafficCtx, app.trafficCancel = ctx, cancel
+	// A failed open waits for the backoff instead of retrying every tick.
+	app.trafficRetryAt = time.Now().Add(5 * time.Second)
+	app.trafficGen++
+	generation := app.trafficGen
+	kind := fmt.Sprintf("traffic-open:%d", generation)
+	app.post(kind, func() apiMsg {
+		ch, err := app.src.StartTraffic(ctx)
+		return apiMsg{kind: kind, err: err, traffic: ch, generation: generation}
+	})
+}
+
+// closeTrafficStream stops the traffic stream. Like the log stream, closing
+// invalidates a pending open.
+func (app *App) closeTrafficStream() {
+	app.trafficGen++
+	if app.trafficCancel != nil {
+		app.trafficCancel()
+		app.trafficCancel = nil
+	}
+	app.trafficCh = nil
 }
 
 func (app *App) Run() error {
@@ -330,8 +568,10 @@ func (app *App) Run() error {
 	resize := watchResize()
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
-	app.openTraffic()
 	app.refresh(app.page)
+	if app.page == pageOverview {
+		app.openTraffic()
+	}
 	app.dirty = true
 	for !app.quit {
 		select {
@@ -359,7 +599,7 @@ func (app *App) Run() error {
 			if !ok {
 				app.logCh = nil
 				app.setNotice("日志流中断，自动重连中…")
-			} else if !app.logPaused || line.Type == "error" {
+			} else if !app.paused || line.Type == "error" {
 				// Pausing holds back the firehose, never stream-break markers.
 				app.logs = append(app.logs, line)
 				if len(app.logs) > 1000 {
@@ -370,6 +610,7 @@ func (app *App) Run() error {
 		case <-resize:
 			w, h := termSize()
 			app.scr.Resize(w, h)
+			app.layout = computeLayout(w, h)
 			app.dirty = true
 		case <-tick.C:
 			app.onTick()
@@ -385,7 +626,7 @@ func (app *App) Run() error {
 
 func (app *App) onTick() {
 	now := time.Now()
-	if interval := pageInterval[app.page]; interval > 0 {
+	if interval := pageInterval[app.page]; interval > 0 && !app.paused {
 		if now.Sub(app.lastFetch[kindFor(app.page)]) > time.Duration(interval*float64(time.Second)) {
 			app.refresh(app.page)
 		}
@@ -395,16 +636,16 @@ func (app *App) onTick() {
 		app.dirty = true
 	}
 	// Reopen dropped streams with a cooldown; inflight dedupe in post()
-	// keeps a slow attempt from piling up.
-	if app.trafficCh == nil && now.After(app.trafficRetryAt) {
+	// keeps a slow attempt from piling up. Only the page that owns a stream
+	// reconnects it: the logs stream belongs to the logs page, the traffic
+	// stream to the overview page.
+	if app.page == pageOverview && app.trafficCh == nil && now.After(app.trafficRetryAt) {
 		app.trafficRetryAt = now.Add(5 * time.Second)
 		app.openTraffic()
 	}
-	// Logs reconnect globally once the stream has been opened at all: the
-	// 1000-line ring keeps receiving while the user is on other pages.
-	if app.logsOpened && app.logCh == nil && now.After(app.logsRetryAt) {
+	if app.page == pageLogs && app.logsOpened && app.logCh == nil && now.After(app.logsRetryAt) {
 		app.logsRetryAt = now.Add(5 * time.Second)
-		app.refresh(pageLogs)
+		app.openLogStream()
 	}
 }
 
@@ -429,9 +670,43 @@ func kindFor(page string) string {
 	}
 }
 
+// refreshOverviewStatus fetches the service status the overview shows: the
+// controller state, the pending restart and the unavailable features. It is
+// a service read, not a controller read, so it runs less often than the
+// traffic and connection snapshots.
+func (app *App) refreshOverviewStatus() {
+	if time.Since(app.lastFetch["cli:status:overview"]) < 5*time.Second {
+		return
+	}
+	app.post("cli:status:overview", func() apiMsg {
+		env, err := app.cli.Run("status")
+		if err != nil {
+			return apiMsg{kind: "cli:status:overview", cliKind: "status", err: err, silent: true}
+		}
+		return apiMsg{kind: "cli:status:overview", cliKind: "status", data: env.Data, overall: env.Overall}
+	})
+}
+
 func (app *App) onAPI(msg apiMsg) {
 	delete(app.inflight, msg.kind)
+	if msg.kind == "cli:status:overview" {
+		// The overview shows this status itself, so a failure belongs on the
+		// page and not in the status bar.
+		if msg.err != nil {
+			app.overviewErr = msg.err.Error()
+			app.overviewData = nil
+		} else {
+			app.overviewErr = ""
+			app.overviewData = msg.data
+		}
+		return
+	}
 	if msg.err != nil {
+		// Releasing an abandoned preview is best effort: a failure must not
+		// surface as a console error, so it is dropped instead of recorded.
+		if strings.HasPrefix(msg.kind, "discard:") {
+			return
+		}
 		app.errs[msg.kind] = msg.err.Error()
 		// CLI ops surface as a notice plus a failed result, not a stuck page —
 		// except automatic page refreshes, which stay status-bar-only.
@@ -444,6 +719,11 @@ func (app *App) onAPI(msg apiMsg) {
 		}
 		if msg.kind == "cli:subscription-apply" {
 			app.subBusy = false // a failed apply must not strand the page in "saving…"
+			// A saved subscription whose restart failed still waits for a
+			// restart, so the overview has to say so.
+			if stringValue(msg.data["state"]) == "restart-required" {
+				app.pendingRestart = true
+			}
 		}
 		if strings.HasPrefix(msg.kind, "delay:") {
 			delete(app.testing, nodeKey(msg.delayNode, msg.delayProvider))
@@ -456,12 +736,35 @@ func (app *App) onAPI(msg apiMsg) {
 	// carries its own key (op:start, op:mode x, op:provider n) so one slow op
 	// can never swallow a different, user-confirmed one.
 	if msg.kind == "op" || strings.HasPrefix(msg.kind, "op:") {
+		// A change that was saved but is not in effect yet must be visible
+		// on the overview; a restart brings it into effect.
+		if stringValue(msg.data["state"]) == "restart-required" {
+			app.pendingRestart = true
+		}
+		if msg.opName == "start" || msg.opName == "restart" {
+			app.pendingRestart = false
+		}
 		if msg.text != "" {
 			app.setNotice(msg.opName + " 完成：" + msg.text)
 		} else {
 			app.setNotice(msg.opName + " 完成")
 		}
 		app.refresh(app.page)
+	}
+	// Stream opens carry their own key and generation. A stream whose page
+	// was left, or whose generation was superseded, is dropped: its context
+	// is cancelled, so the producer goroutine ends on its own.
+	if strings.HasPrefix(msg.kind, "traffic-open") {
+		if msg.traffic != nil && app.page == pageOverview && app.trafficCh == nil &&
+			msg.generation == app.trafficGen {
+			app.trafficCh = msg.traffic
+		}
+	}
+	if strings.HasPrefix(msg.kind, "logs-open") {
+		if msg.logs != nil && app.page == pageLogs && app.logCh == nil &&
+			msg.generation == app.logGen {
+			app.logCh = msg.logs
+		}
 	}
 	switch msg.kind {
 	case "proxies":
@@ -536,14 +839,6 @@ func (app *App) onAPI(msg apiMsg) {
 		if msg.memory != nil {
 			app.mem = *msg.memory
 		}
-	case "traffic-open":
-		if msg.traffic != nil {
-			app.trafficCh = msg.traffic
-		}
-	case "logs-open":
-		if msg.logs != nil {
-			app.logCh = msg.logs
-		}
 	case "select":
 		app.refresh(pageProxies)
 		app.refresh(pageOverview)
@@ -572,6 +867,20 @@ func (app *App) onAPI(msg apiMsg) {
 		switch msg.cliKind {
 		case "status":
 			app.runtimeDoc = msg.lines
+			if msg.data != nil {
+				app.runtimeData = msg.data
+				if _, ok := app.runtimeData["overall"]; !ok && msg.overall != "" {
+					// The conclusion belongs to the envelope, not to the
+					// data document: copy before adding it, so the envelope
+					// stays untouched for everyone else.
+					copied := make(map[string]any, len(app.runtimeData)+1)
+					for key, value := range app.runtimeData {
+						copied[key] = value
+					}
+					copied["overall"] = msg.overall
+					app.runtimeData = copied
+				}
+			}
 		case "profile":
 			app.profileRows = msg.lines
 		case "health", "doctor", "journal", "diagnose url", "diagnose process":
@@ -596,6 +905,16 @@ func (app *App) onAPI(msg apiMsg) {
 			app.subPreview = msg.preview
 			app.subID = stringValue(msg.preview["id"])
 			app.subSHA = stringValue(msg.preview["sha256"])
+			// The backend may answer with a different policy than the one
+			// that was requested: the guided import resolves against the
+			// local configuration. Everything that is known about the
+			// policy is kept, so the page can state what will be written.
+			app.subEffective = stringValue(msg.preview["policy"])
+			app.subRequested = stringValue(msg.preview["requested_policy"])
+			app.subSent = msg.policySent
+			app.subGuided = msg.guided
+			app.subFallback = msg.policyFallback
+			app.subPolicyNote = app.policyNote()
 			app.setNotice("预览就绪：y 保存并启动（会先确认）")
 		default:
 			app.setNotice("预览被拒绝，按 v 查看原因")
@@ -603,12 +922,51 @@ func (app *App) onAPI(msg apiMsg) {
 	}
 	if msg.kind == "cli:subscription-apply" {
 		app.subBusy = false
+		// A saved subscription that only waits for a restart is pending
+		// until the runtime is restarted.
+		state := stringValue(msg.data["state"])
+		if state == "restart-required" {
+			app.pendingRestart = true
+		}
 		if msg.applyOK {
 			app.subPreview, app.subID, app.subSHA = nil, "", ""
-			app.setNotice("订阅已保存并启动")
+			app.resetSubPolicy()
+			if state == "restart-required" {
+				// The file is written, but the runtime still serves the old
+				// configuration: announcing "saved and started" here would
+				// be a lie.
+				app.setNotice("订阅已保存，尚未生效，请重启")
+			} else {
+				if state == "restarted" {
+					app.pendingRestart = false
+				}
+				app.setNotice("订阅已保存并启动")
+			}
 			app.changePage(pageProxies)
 		}
 	}
+	// The script preview never writes: it opens the confirmation that does.
+	if msg.kind == "cli:override" {
+		app.applyOverride()
+	}
+	// A deferred exit waits for the confirmed operation that is still
+	// running, so quitting never cuts a started action in half.
+	if app.exitRequested && !app.opInFlight() && !app.batchRunning {
+		app.quit = true
+	}
+}
+
+// opInFlight reports whether a confirmed operation is still running.
+func (app *App) opInFlight() bool {
+	for key := range app.inflight {
+		switch {
+		case key == "op", key == "select", key == "cli:subscription-apply":
+			return true
+		case strings.HasPrefix(key, "op:"):
+			return true
+		}
+	}
+	return false
 }
 
 func stringValue(value any) string {
@@ -616,6 +974,23 @@ func stringValue(value any) string {
 		return text
 	}
 	return ""
+}
+
+// boolValue reads a boolean observation out of a service payload.
+func boolValue(value any) bool {
+	if flag, ok := value.(bool); ok {
+		return flag
+	}
+	return false
+}
+
+// resetSubPolicy clears everything that is known about the import policy of
+// the last preview, so a new request never shows the previous one's
+// provenance.
+func (app *App) resetSubPolicy() {
+	app.subEffective, app.subRequested, app.subSent = "", "", ""
+	app.subGuided, app.subFallback = false, ""
+	app.subPolicyNote = ""
 }
 
 func (app *App) setProxies(proxies map[string]Proxy) {
@@ -684,16 +1059,34 @@ func (app *App) setNotice(text string) {
 	app.noticeAt = time.Now()
 }
 
+// changePage switches pages. It accepts the retained "profiles" identifier
+// for the subscription page, and moves the streams that belong to a page:
+// the log stream belongs to the logs page, the traffic stream to the
+// overview page.
 func (app *App) changePage(page string) {
+	page = resolvePage(page)
 	if _, ok := pageNames[page]; !ok {
 		return
 	}
+	leaving := app.page
 	app.page = page
 	app.connOff, app.logOff, app.diagOff, app.rtOff = 0, 0, 0, 0
 	// A filter is page-scoped intent; never let a stale one silently hide
 	// content on the next page (there is no always-visible filter indicator).
 	app.filter, app.filtering = "", false
 	app.rebuildNodes() // drop the previously filtered node list immediately
+	app.paused = false
+	if leaving == pageLogs && page != pageLogs {
+		app.closeLogStream()
+	}
+	if leaving == pageOverview && page != pageOverview {
+		app.closeTrafficStream()
+	}
+	if page == pageOverview {
+		// The service status belongs to the overview; fetch it again as
+		// soon as the page is open instead of waiting for the cooldown.
+		delete(app.lastFetch, "cli:status:overview")
+	}
 	app.refresh(page)
 	if page == pageOverview {
 		app.openTraffic()
@@ -703,6 +1096,10 @@ func (app *App) changePage(page string) {
 func (app *App) onKey(k Key) {
 	if app.pending != nil {
 		app.onModalKey(k)
+		return
+	}
+	if app.picker != nil {
+		app.pickerKey(k)
 		return
 	}
 	if app.input != nil {
@@ -719,10 +1116,10 @@ func (app *App) onKey(k Key) {
 	}
 	switch k.Type {
 	case KeyCtrlC:
-		app.quit = true
+		app.requestQuit()
 		return
 	case KeyEsc:
-		app.setNotice("")
+		app.cancelAction()
 		return
 	case KeyTab:
 		if app.page == pageProxies {
@@ -775,7 +1172,7 @@ func (app *App) onKey(k Key) {
 	}
 	switch k.Rune {
 	case 'q':
-		app.quit = true
+		app.requestQuit()
 	case 'r':
 		// No inflight wipe: post() already dedupes, and clearing the map
 		// mid-flight lets a second stream open strand the first's goroutine.
@@ -796,12 +1193,16 @@ func (app *App) onKey(k Key) {
 		// Only pages that actually consume the filter open filter mode;
 		// elsewhere '/' would be a dead editing state.
 		switch app.page {
-		case pageProxies, pageConnections, pageLogs:
+		case pageProxies, pageConnections, pageLogs, pageProviders, pageRules:
 			app.filtering = true
 		}
 	case ':':
 		app.cmdOpen = true
 		app.cmdline = ""
+	case '?':
+		app.pending = &pendingAction{text: helpText, run: func(app *App) {}}
+	case 'o':
+		app.openOptions()
 	case 's':
 		app.onKeySort()
 	case 't':
@@ -815,8 +1216,11 @@ func (app *App) onKey(k Key) {
 	case 'p':
 		switch app.page {
 		case pageLogs:
-			app.logPaused = !app.logPaused
-			app.setNotice(map[bool]string{true: "已暂停", false: "已继续"}[app.logPaused])
+			app.paused = !app.paused
+			app.setNotice(map[bool]string{true: "已暂停", false: "已继续"}[app.paused])
+		case pageConnections:
+			app.paused = !app.paused
+			app.setNotice(map[bool]string{true: "已暂停刷新", false: "已继续刷新"}[app.paused])
 		case pageSubscriptions:
 			app.cyclePolicy()
 		}
@@ -961,7 +1365,7 @@ func (app *App) cursorTo(index int) {
 }
 
 func (app *App) runtimeMaxScroll() int {
-	return maxInt(0, len(app.runtimeDoc)-(app.scr.H-5))
+	return maxInt(0, len(app.runtimeRows())-(app.scr.H-5))
 }
 
 // scroll moves the long documents; each page's step is its own viewport size
@@ -1104,11 +1508,30 @@ func (app *App) executeCommand(line string) {
 	verb, rest := fields[0], fields[1:]
 	switch verb {
 	case "q", "quit":
-		app.quit = true
+		app.requestQuit()
 		return
 	case "page":
 		if len(rest) == 1 {
-			app.changePage(rest[0])
+			resolved := resolvePage(rest[0])
+			if _, ok := pageNames[resolved]; !ok {
+				app.setNotice("未知页面：" + rest[0] + "（可用：" + strings.Join(pageOrder, " ") + "）")
+				return
+			}
+			app.changePage(resolved)
+		}
+		return
+	case "theme":
+		if len(rest) == 1 && Theme(rest[0]).valid() {
+			app.SetTheme(Theme(rest[0]))
+		} else {
+			app.setNotice("用法：theme dark|light")
+		}
+		return
+	case "log-level":
+		if len(rest) == 1 {
+			app.setLogLevel(rest[0])
+		} else {
+			app.setNotice("用法：log-level debug|info|warning|error")
 		}
 		return
 	case "help":
@@ -1131,6 +1554,11 @@ func (app *App) executeCommand(line string) {
 	case "init":
 		app.askInitController()
 		return
+	case "override":
+		// The trusted script is previewed; writing it needs the separate
+		// confirmation that the preview opens.
+		app.askOverride()
+		return
 	case "dns":
 		app.cmdDNS(rest)
 		return
@@ -1138,6 +1566,24 @@ func (app *App) executeCommand(line string) {
 		if len(rest) == 1 {
 			app.askRefreshProviderNamed(rest[0])
 		}
+		return
+	case "subscribe":
+		// The file is previewed under the policy the subscription page
+		// currently shows, exactly like the baseline console.
+		if len(rest) != 1 {
+			app.setNotice("用法：subscribe FILE")
+			return
+		}
+		app.subscriptionPreview("file", rest[0])
+		return
+	case "subscribe-url":
+		// The URL lives in a private file; it is read in the worker and
+		// never reaches a command line.
+		if len(rest) != 1 {
+			app.setNotice("用法：subscribe-url PRIVATE_URL_FILE")
+			return
+		}
+		app.subscriptionURLFile(rest[0])
 		return
 	case "journal":
 		since, until := "", ""
@@ -1201,7 +1647,13 @@ func (app *App) executeCommand(line string) {
 		post("cli:migrate-preview", "migrate", []string{"--dry-run"}, "migrate-preview")
 	case "reset --dry-run":
 		post("cli:reset-preview", "reset", []string{"--dry-run"}, "reset-preview")
-	case "profiles", "profile list":
+	case "profiles":
+		// The retained identifier for the subscription page; the profile
+		// listing itself is available as ": profile list".
+		app.changePage(pageSubscriptions)
+	case "profile":
+		app.changePage(pageProfile)
+	case "profile list":
 		post("cli:profiles", "profiles", nil, "profiles")
 	case "env show":
 		post("cli:env-show", "env", []string{"show"}, "env-show")
@@ -1276,15 +1728,21 @@ func (app *App) cmdDNS(rest []string) {
 }
 
 const helpText = `页面：1 首页 | 2 节点 | 3 订阅 | 4 连接 | 5 规则 | 6 日志 | 7 接入 | 8 提供商 | 9 诊断 | 0 服务
-通用：Tab/Shift+Tab 切页或切栏 | ↑↓ 移动 | Enter 确认 | / 过滤（节点/连接/日志） | r 刷新 | v 上次结果 | : 命令 | q 退出
+通用：Tab/Shift+Tab 切页或切栏 | ↑↓ 移动 | Enter 确认 | / 过滤（节点/连接/日志/提供商/规则）
+      r 刷新 | v 上次结果 | : 命令 | ? 帮助 | o 选项（主题/日志级别/字符集） | q 退出
 节点：t 测速 | T 批量(8 并发) | s 排序 | [ ] 换组 | Tab 切换分组/节点栏
-订阅：u 输入 URL | f 选择文件 | p 切换策略 | y 保存并启动
+订阅：u 输入 URL | f 选择文件 | p 切换策略（简单/完整/仅节点/仅策略/自动） | y 保存并启动
+日志：p 暂停 | / 过滤 | PgUp/PgDn 滚动 | 离开本页会停止日志流，返回时按当前级别重连
+连接：p 暂停刷新 | / 过滤 | PgUp/PgDn 滚动
 诊断：h health | d doctor | j journal | u diagnose url | 大写流程同 Textual 版
 提供商：Enter/,: provider NAME 刷新
 命令：page NAME | mode rule|global|direct | start|stop|restart | init | dns NAME [TYPE]
-      provider NAME | journal --since T --until T | health | doctor | status | rules-status
+      provider NAME | subscribe FILE | subscribe-url PRIVATE_URL_FILE
+      journal --since T --until T | health | doctor | status | rules-status
       rules-check | release check | version | core list | tun status | config validate
-      migrate --dry-run | reset --dry-run | profiles | env show | chain | cancel | help
+      migrate --dry-run | reset --dry-run | profile list | env show | chain | cancel | help
+      theme dark|light | log-level debug|info|warning|error | override（预览受信脚本，确认后写入）
+页面别名：profiles 指向订阅页（profile 是另一页：代理档案与接入声明）
 透传：任何其他命令原样转给 mihomoctl --json 并渲染信封（exec/direct/update 除外）`
 
 func readKeys(out chan<- Key) {

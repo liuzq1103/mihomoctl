@@ -210,3 +210,206 @@ func clearingWarnings(preview map[string]any) []string {
 	return []string{"警告：此预览会移除本地的" + strings.Join(units, "、") +
 		"；提供商策略按订阅内容整体替换，不自动降级，确认后再保存；不保留历史备份。"}
 }
+
+// policyLabel names an import policy, falling back to the raw value for a
+// policy this console does not know.
+func policyLabel(policy string) string {
+	if name, ok := policyNames[policy]; ok {
+		return name
+	}
+	return policy
+}
+
+// guidedNote explains which of the two guided outcomes the service chose.
+// The guided import is not an alias of "auto": the service looks at the
+// local configuration and either keeps its routing (nodes only) or replaces
+// it with a single Proxy group.
+func guidedNote(effective string) string {
+	if effective == "nodes" {
+		return "引导导入：本地已有路由策略 → 只合并节点，保留现有分组与规则。"
+	}
+	return "引导导入：本地仍是简单结构 → 导入节点并生成单一 Proxy 分组，不导入远端规则。"
+}
+
+// policyNote states, in one line, how the policy that will be applied
+// relates to the one the operator chose. Every deviation is reported: the
+// console never lets a preview look like the requested policy was honoured
+// when it was not.
+func (app *App) policyNote() string {
+	if app.subFallback != "" {
+		return app.subFallback
+	}
+	if app.subSent == "" {
+		return ""
+	}
+	if app.subSent != app.subPolicy {
+		// The service refused the guided policy and the console fell back.
+		return "本机服务不支持引导导入（" + policyLabel(app.subPolicy) +
+			"），本次改按 " + policyLabel(app.subSent) + " 预览；请核对预览内容。"
+	}
+	if app.subPolicy == "simple" {
+		switch {
+		case app.subGuided && app.subEffective == "provider":
+			return guidedNote("provider")
+		case app.subEffective == "nodes":
+			// The service mapped the guided request to a nodes-only merge
+			// because the local configuration already carries routing.
+			return guidedNote("nodes")
+		}
+	}
+	if app.subEffective != "" && app.subEffective != app.subSent {
+		return "本机服务返回的导入策略为 " + policyLabel(app.subEffective) +
+			"（请求：" + policyLabel(app.subSent) + "）；请核对预览内容。"
+	}
+	return ""
+}
+
+// labelFor names a field, falling back to the raw key.
+func labelFor(key string) string {
+	if title, ok := LABELS[key]; ok {
+		return title
+	}
+	return key
+}
+
+// summarizeItem renders one observation as a short value. A missing
+// observation prints "unknown" rather than nothing, so a partial payload can
+// never read as a complete one. This is presentation only: no verdict is
+// decided here.
+func summarizeItem(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return "unknown"
+	case bool:
+		if typed {
+			return "yes"
+		}
+		return "no"
+	case float64:
+		if typed == float64(int64(typed)) {
+			return fmt.Sprintf("%d", int64(typed))
+		}
+		return fmt.Sprintf("%g", typed)
+	case string:
+		return typed
+	case map[string]any:
+		parts := []string{}
+		for _, name := range sortedKeys(typed) {
+			if typed[name] == nil {
+				continue
+			}
+			parts = append(parts, labelFor(name)+"="+summarizeItem(typed[name]))
+		}
+		if len(parts) == 0 {
+			return "unknown"
+		}
+		return strings.Join(parts, " ")
+	case []any:
+		parts := []string{}
+		for index, item := range typed {
+			if index >= 8 {
+				break
+			}
+			parts = append(parts, summarizeItem(item))
+		}
+		return strings.Join(parts, " | ")
+	default:
+		return fmt.Sprintf("%v", value)
+	}
+}
+
+// stringOr reads a string field, falling back to a default.
+func stringOr(data map[string]any, key, fallback string) string {
+	if text, ok := data[key].(string); ok && text != "" {
+		return text
+	}
+	return fallback
+}
+
+// overviewController renders the controller state the service reported. The
+// status document and the overview document describe the controller
+// differently, so both shapes are accepted.
+//
+// The second result is false when the controller is not connected: the page
+// then explains how to recover instead of printing an empty state.
+func (app *App) overviewController() (string, bool) {
+	data := app.overviewData
+	if data == nil {
+		if app.overviewErr != "" {
+			return "控制器尚未连接：" + app.overviewErr, false
+		}
+		return "", true
+	}
+	if text, ok := data["controller"].(string); ok && text == "unavailable" {
+		code := stringOr(data, "error", "unknown")
+		return "控制器尚未连接：" + code, false
+	}
+	if controller, ok := data["controller"].(map[string]any); ok {
+		return "控制器：" + summarizeItem(controller), true
+	}
+	if endpoint := stringOr(data, "endpoint", ""); endpoint != "" {
+		return "控制器：" + endpoint + " | 身份验证：" + stringOr(data, "authentication", "unknown") +
+			" | 监听：" + stringOr(data, "listener", "unknown"), true
+	}
+	return "", true
+}
+
+// overviewPendingRestart reports whether a saved change is not in effect yet.
+// The service states it in the status document; the console knows it for the
+// operations that only wrote a file.
+func (app *App) overviewPendingRestart() bool {
+	return app.pendingRestart || boolValue(app.overviewData["pending_restart"])
+}
+
+// overviewCapabilities lists the features the overview could not read. The
+// service reports them in the status document; the console adds the ones its
+// own controller reads could not deliver, so a partial page never reads as a
+// complete one.
+func (app *App) overviewCapabilities() []string {
+	lines := []string{}
+	if capabilities, ok := app.overviewData["capabilities"].(map[string]any); ok {
+		for _, name := range sortedKeys(capabilities) {
+			lines = append(lines, fmt.Sprintf("功能 %s 暂不可用：%s", name, summarizeItem(capabilities[name])))
+		}
+	}
+	for _, feature := range []struct{ name, key string }{
+		{"groups", "proxies"},
+		{"connections", "connections"},
+		{"mode", "configs"},
+	} {
+		if code, ok := app.errs[feature.key]; ok {
+			lines = append(lines, fmt.Sprintf("功能 %s 暂不可用：%s", feature.name, code))
+		}
+	}
+	return lines
+}
+
+// runtimeFacts renders the V1 runtime contract: core, controller, listeners,
+// effective config, proxy mode, TUN and error.
+//
+// Every row is printed even when the observation is unknown, so the page
+// cannot imply a healthy runtime from partial data.
+func runtimeFacts(data map[string]any) []string {
+	rows := []string{fmt.Sprintf("运行时 · 作用域 %s · 后端 %s · 结论 %s",
+		stringOr(data, "scope", "unknown"), stringOr(data, "backend", "unknown"),
+		stringOr(data, "overall", "UNVERIFIED"))}
+	if reason := stringOr(data, "reason", ""); reason != "" {
+		rows = append(rows, "原因："+reason)
+	}
+	rows = append(rows, "核心："+summarizeItem(data["core"]))
+	rows = append(rows, "控制器："+summarizeItem(data["controller"]))
+	rows = append(rows, "监听："+summarizeItem(data["listeners"]))
+	config := data["config"]
+	if config == nil {
+		config = data["active_config"]
+	}
+	rows = append(rows, "生效配置："+summarizeItem(config))
+	rows = append(rows, "代理模式："+stringOr(data, "proxy_mode", "unknown"))
+	rows = append(rows, "核心路由模式："+stringOr(data, "routing_mode", "unknown"))
+	tun := summarizeItem(data["tun"])
+	rows = append(rows, "TUN："+tun+"（V1 默认关闭；仅管理员显式 --system 可开启）")
+	if errValue := data["error"]; errValue != nil {
+		rows = append(rows, "错误："+summarizeItem(errValue))
+	}
+	return rows
+}

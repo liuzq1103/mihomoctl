@@ -9,3 +9,4 @@ dist/
 
 # Local Go toolchain caches if placed here
 .gocache/
+.work/

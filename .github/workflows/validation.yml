@@ -1,0 +1,72 @@
+name: Linux validation
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  privileged-systemd:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['22.04', '24.04']
+    runs-on: ubuntu-${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - run: go run ./scripts/release -arch amd64 -offline -out /tmp/mihomoctl-go-system-candidate
+      - name: Required real-core two-UID SSH TUN and crash-recovery acceptance
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server openssh-client iproute2
+          go test -c -o "$RUNNER_TEMP/runtimecore-privileged.test" ./internal/runtimecore
+          sudo env GITHUB_ACTIONS=true sh scripts/privileged-runtime.sh \
+            /tmp/mihomoctl-go-system-candidate/mihomoctl-go-0.2.0-offline-linux-amd64.tar.gz \
+            "$RUNNER_TEMP/runtimecore-privileged.test"
+      - run: sudo --preserve-env=GITHUB_ACTIONS sh scripts/smoke-system.sh /tmp/mihomoctl-go-system-candidate/mihomoctl-go-0.2.0-offline-linux-amd64.tar.gz
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['22.04', '24.04']
+        arch: [amd64, arm64]
+    runs-on: ubuntu-${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - name: Native amd64 execution
+        if: matrix.arch == 'amd64'
+        run: sh scripts/ci-linux.sh amd64
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.arch == 'arm64'
+        with:
+          platforms: arm64
+      - name: Ubuntu arm64 execution under explicit QEMU
+        if: matrix.arch == 'arm64'
+        env:
+          UBUNTU: ${{ matrix.os }}
+        run: |
+          # Copy the official arm64 Go toolchain into the Ubuntu container.
+          docker pull --platform linux/arm64 golang:1.23
+          toolchain=$(docker create --platform linux/arm64 golang:1.23)
+          mkdir -p "$RUNNER_TEMP/arm64-toolchain"
+          docker cp "$toolchain:/usr/local/go" "$RUNNER_TEMP/arm64-toolchain/go"
+          docker rm "$toolchain"
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/work" -w /work \
+            -v "$RUNNER_TEMP/arm64-toolchain/go:/usr/local/go:ro" \
+            -e PATH=/usr/local/go/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            "ubuntu:$UBUNTU" sh -ec '
+              apt-get update
+              apt-get install -y ca-certificates gcc libc6-dev git
+              git config --global --add safe.directory /work
+              sh scripts/ci-linux.sh arm64
+            '

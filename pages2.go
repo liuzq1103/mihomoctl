@@ -14,48 +14,70 @@ func (app *App) drawSubscriptions() {
 	scr := app.scr
 	top, _ := app.contentRows()
 	row := top
-	scr.Text(2, row, "订阅：u 输入 URL → 预览 → y 保存并启动｜f 使用 YAML 文件｜p 策略：", Bold)
+	scr.TextLimit(2, row, scr.W-4, "订阅：u 输入 URL → 预览 → y 保存并启动｜f 使用 YAML 文件｜p 切换策略", Bold)
+	row++
 	policy := policyNames[app.subPolicy]
-	if app.subPolicy == "auto" {
-		policy = "自动判断（按内容）"
-	}
-	scr.Text(scr.W-24, row, policy, Cyan)
+	scr.TextLimit(4, row, scr.W-8, "策略："+policy, Cyan)
+	row++
+	// What the chosen policy actually does. "simple" is a guided import,
+	// not another name for "auto", so the page says which one it is.
+	scr.TextLimit(4, row, scr.W-8, policyHelp[app.subPolicy], Dim)
 	row++
 	kind := "订阅 URL（内存）"
 	if app.subKind == "file" {
 		kind = "YAML 文件"
 	}
-	scr.Text(4, row, "来源："+kind+" ｜ 本机端口、控制器、密钥、DNS、TUN 始终保留", Dim)
-	row += 2
+	scr.TextLimit(4, row, scr.W-8, "来源："+kind+" ｜ 本机端口、控制器、密钥、DNS、TUN 始终保留", Dim)
+	row++
+	if app.subPolicyNote != "" {
+		scr.TextLimit(4, row, scr.W-8, app.subPolicyNote, Yellow)
+		row++
+	}
+	row++
 	if app.subPreview == nil {
-		scr.Text(2, row, "尚无预览。粘贴订阅 URL（u）或选择私有 YAML 文件（f）后自动生成预览。", Normal)
+		scr.TextLimit(2, row, scr.W-4, "尚无预览。粘贴订阅 URL（u）或选择私有 YAML 文件（f）后自动生成预览。", Normal)
 		row++
-		scr.Text(2, row, "提供商策略＝订阅自带的节点/分组/规则，缺少的字段会清空；仅合并节点＝只按同名替换 proxies。", Normal)
+		scr.TextLimit(2, row, scr.W-4, "提供商策略＝订阅自带的节点/分组/规则，缺少的字段会清空；仅合并节点＝只按同名替换 proxies。", Normal)
 		row++
-		scr.Text(2, row, "标准输入导入：mihomoctl tui --stdin < 私有订阅.yaml（本原型暂用 URL/文件输入）", Normal)
+		scr.TextLimit(2, row, scr.W-4, "标准输入导入：mihomoctl tui --stdin < 私有订阅.yaml（本原型暂用 URL/文件输入）", Normal)
 		return
 	}
+	// The backend may answer with a different policy than the one that was
+	// requested: the guided import resolves against the local configuration.
+	// Both are shown, so the operator sees what will actually be written.
+	if app.subEffective != "" && app.subEffective != app.subPolicy {
+		requested := app.subSent
+		if requested == "" {
+			requested = app.subPolicy
+		}
+		line := "实际导入策略：" + policyLabel(app.subEffective)
+		if requested != app.subEffective {
+			line += "（请求：" + policyLabel(requested) + "）"
+		}
+		scr.TextLimit(2, row, scr.W-4, line, Cyan)
+		row++
+	}
 	for _, line := range previewSummary(app.subPreview) {
-		scr.Text(2, row, line, Normal)
+		scr.TextLimit(2, row, scr.W-4, line, Normal)
 		row++
 	}
 	for _, line := range clearingWarnings(app.subPreview) {
-		scr.Text(2, row, truncByWidth(line, scr.W-4), Yellow|Bold)
+		scr.TextLimit(2, row, scr.W-4, line, Yellow|Bold)
 		row++
 	}
 	if ignored := renderDoc(app.subPreview["ignored_fields"], "  ", 0); len(ignored) > 0 {
 		scr.Text(2, row, "忽略的运行设置：", Normal)
 		row++
 		for _, line := range ignored {
-			scr.Text(4, row, line, Dim)
+			scr.TextLimit(4, row, scr.W-8, line, Dim)
 			row++
 		}
 	}
 	if overwrites, ok := app.subPreview["probe_overwrites"].([]any); ok && len(overwrites) > 0 {
-		scr.Text(2, row, fmt.Sprintf("订阅将覆盖 %d 项现有探测设置；v 查看修改前后。", len(overwrites)), Yellow)
+		scr.TextLimit(2, row, scr.W-4, fmt.Sprintf("订阅将覆盖 %d 项现有探测设置；v 查看修改前后。", len(overwrites)), Yellow)
 		row++
 	}
-	scr.Text(2, row, "保存将写入此预览（y）；v 查看完整变化。", Green)
+	scr.TextLimit(2, row, scr.W-4, "保存将写入此预览（y）；v 查看完整变化。", Green)
 	row++
 	if app.subBusy {
 		scr.Text(2, row, "正在保存并启动…", Bold)
@@ -73,18 +95,22 @@ func (app *App) drawProviders() {
 	scr.Text(30, top, "类型", Bold)
 	scr.Text(42, top, "节点", Bold)
 	scr.Text(52, top, "更新时间", Bold)
+	needle := strings.ToLower(app.filter)
 	y := top + 1
 	for i, provider := range app.proxyProv {
 		if y >= top+height {
 			break
 		}
+		if needle != "" && !strings.Contains(strings.ToLower(provider.Name), needle) {
+			continue
+		}
 		style := Style(0)
 		if i == app.provIdx {
 			style = Reverse
 		}
-		scr.Text(1, y, provider.Name, style)
-		scr.Text(30, y, provider.VehicleType, style)
-		scr.Text(42, y, fmt.Sprintf("%d", provider.NodeCount()), style)
+		scr.TextLimit(1, y, 28, provider.Name, style)
+		scr.TextLimit(30, y, 11, provider.VehicleType, style)
+		scr.TextLimit(42, y, 9, fmt.Sprintf("%d", provider.NodeCount()), style)
 		scr.TextLimit(52, y, 24, provider.UpdatedAt, style|Dim)
 		y++
 	}
@@ -96,13 +122,20 @@ func (app *App) drawProviders() {
 		if y >= top+height {
 			break
 		}
-		scr.Text(1, y, provider.Name, 0)
-		scr.Text(30, y, provider.Behavior, 0)
-		scr.Text(42, y, fmt.Sprintf("%d", provider.RuleCount), 0)
+		if needle != "" && !strings.Contains(strings.ToLower(provider.Name), needle) {
+			continue
+		}
+		scr.TextLimit(1, y, 28, provider.Name, 0)
+		scr.TextLimit(30, y, 11, provider.Behavior, 0)
+		scr.TextLimit(42, y, 9, fmt.Sprintf("%d", provider.RuleCount), 0)
 		scr.TextLimit(52, y, 24, provider.UpdatedAt, Dim)
 		y++
 	}
 	if len(app.proxyProv) == 0 && len(app.ruleProv) == 0 {
+		if text, ok := pageUnavailable(app.errs, "proxy-providers", "providers"); ok {
+			scr.TextLimit(2, top+1, scr.W-4, "不可用："+text, Yellow)
+			return
+		}
 		scr.Text(2, top+1, "正在读取提供商…", Dim)
 	}
 }
@@ -115,6 +148,10 @@ func (app *App) drawProfile() {
 	scr := app.scr
 	top, height := app.contentRows()
 	if len(app.profileRows) == 0 {
+		if text, ok := pageUnavailable(app.errs, "cli:profile"); ok {
+			scr.TextLimit(2, top, scr.W-4, "不可用："+text, Yellow)
+			return
+		}
 		scr.Text(2, top, "正在读取代理档案与接入声明…", Dim)
 		return
 	}
@@ -149,17 +186,43 @@ func (app *App) drawDiagnostics() {
 func (app *App) drawRuntime() {
 	scr := app.scr
 	top, height := app.contentRows()
-	if len(app.runtimeDoc) == 0 {
+	rows := app.runtimeRows()
+	if len(rows) == 0 {
+		if text, ok := pageUnavailable(app.errs, "cli:status"); ok {
+			scr.TextLimit(2, top, scr.W-4, "不可用："+text, Yellow)
+			return
+		}
 		scr.Text(2, top, "正在读取运行时事实（mihomoctl status）…", Dim)
 		return
 	}
-	drawLines(scr, top, height-1, app.runtimeDoc, app.rtOff)
+	visible := height - 1
+	drawLines(scr, top, visible, rows, app.rtOff)
 	hint := "七项运行时事实：核心、控制器、监听、生效配置、代理模式、TUN、错误"
-	if visible := height - 1; len(app.runtimeDoc) > visible {
-		first, last := app.rtOff+1, min(app.rtOff+visible, len(app.runtimeDoc))
-		hint = fmt.Sprintf("↑↓/PgUp 滚动 · 行 %d-%d/%d｜", first, last, len(app.runtimeDoc)) + hint
+	if len(rows) > visible {
+		first, last := app.rtOff+1, min(app.rtOff+visible, len(rows))
+		hint = fmt.Sprintf("↑↓/PgUp 滚动 · 行 %d-%d/%d｜", first, last, len(rows)) + hint
 	}
 	scr.TextLimit(2, top+height-1, scr.W-4, hint, Dim)
+}
+
+// runtimeRows renders the seven V1 runtime facts when the raw status
+// document is available, and the envelope lines otherwise. Every fact is
+// printed even when it is unknown, so a partial payload cannot read as a
+// complete one.
+func (app *App) runtimeRows() []string {
+	if len(app.runtimeData) == 0 {
+		return app.runtimeDoc
+	}
+	rows := runtimeFacts(app.runtimeData)
+	if len(app.runtimeDoc) > 0 {
+		// The evidence checks of the status envelope belong with the facts.
+		for _, line := range app.runtimeDoc {
+			if strings.Contains(line, "[") && strings.Contains(line, "]") {
+				rows = append(rows, line)
+			}
+		}
+	}
+	return rows
 }
 
 // drawLines renders a document with clipping; callers own the title rows.

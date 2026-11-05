@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Mihomo · 节点管理</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f5f8;color:#182536;font:16px system-ui,sans-serif}main{max-width:1050px;margin:40px auto;padding:0 24px}header{display:flex;justify-content:space-between;align-items:center;gap:16px}h1{font-size:28px;margin:8px 0}h2{font-size:19px}p{line-height:1.6;color:#526174}.card,article{background:white;border:1px solid #dde4eb;border-radius:14px;padding:22px;margin:18px 0}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}input,select,button{font:inherit;border:1px solid #bdc9d7;border-radius:8px;padding:10px;max-width:100%}input{flex:1}button{cursor:pointer;background:#155e75;color:white;border-color:#155e75}button:disabled{opacity:.5;cursor:wait}.secondary{background:white;color:#155e75}small{color:#526174}.selected{font-size:21px;color:#116345;overflow-wrap:anywhere}#groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}#groups article{margin:0}#message{min-height:28px;color:#8a360c}pre{white-space:pre-wrap;overflow-wrap:anywhere}select{width:100%;margin:12px 0}footer{padding:24px 0}label{display:block;margin-bottom:8px}
+</style>
+<main><header><div><small>MIHOMO USERCTL · CONTROL PLANE</small><h1>我的节点 / My nodes</h1></div><button id="logout" class="secondary">断开 / Disconnect</button></header>
+<p>查看策略组当前选择，按需切换节点。普通终端仍默认直连；规则决定每个请求经过哪个策略组。</p>
+<section class="card" id="login"><label for="secret">Controller 密钥 / Secret</label><div class="row"><input id="secret" type="password" autocomplete="off" placeholder="从私有终端运行 mihomoctl controller token 获取"><button id="connect">连接 / Connect</button></div><p><small>密钥只保存在本页内存中，不写入 URL 或浏览器存储。远程使用 SSH 转发，勿公开控制端口。</small></p></section>
+<div class="row"><button id="refresh" disabled>刷新 / Refresh</button><button id="connections" class="secondary" disabled>查看实际链路 / Connections</button></div>
+<p id="message" role="status" aria-live="polite">尚未连接 / Disconnected</p><div id="groups"></div><section id="routes" class="card" hidden><h2>实际连接链路 / Active connection chains</h2><pre id="routeText"></pre></section>
+<footer><small>切换仅影响后续选路，不强制断开已有连接。自动选择与负载均衡组只读。延迟测试会向公共测试地址发出请求，不代表 Codex 模型验收成功。</small></footer></main>
+<script>
+'use strict';
+let token='';
+const el=id=>document.getElementById(id), message=text=>{el('message').textContent=text;};
+async function api(path,method='GET',body){
+ const r=await fetch(path,{method,headers:token?{'Authorization':'Bearer '+token,'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,redirect:'error',credentials:'omit',signal:AbortSignal.timeout(10000)});
+ if(!r.ok)throw Error(r.status===401?'认证失败 / Authentication failed':'请求失败 / Request failed ('+r.status+')');
+ return r.status===204?{}:await r.json();
+}
+function text(parent,tag,value,cls){const n=document.createElement(tag);n.textContent=value;if(cls)n.className=cls;parent.append(n);return n;}
+async function refresh(){
+ const data=await api('/proxies');el('groups').replaceChildren();
+ for(const [name,g] of Object.entries(data.proxies)){
+  if(!Array.isArray(g.all))continue;
+  const card=document.createElement('article');text(card,'h2',name);text(card,'small',g.type);
+  text(card,'p',g.now||'动态分配 / Dynamic','selected');
+  if(g.type==='Selector'){
+   const picker=document.createElement('select');picker.setAttribute('aria-label',name+' 节点');
+   for(const member of g.all){const option=document.createElement('option');option.value=member;option.textContent=member;option.selected=member===g.now;picker.append(option);}card.append(picker);
+   const b=text(card,'button','切换 / Select');b.onclick=()=>run(async()=>{await api('/proxies/'+encodeURIComponent(name),'PUT',{name:picker.value});const check=await api('/proxies/'+encodeURIComponent(name));if(check.now!==picker.value)throw Error('切换未确认 / Selection not confirmed');await refresh();message('已确认切换；已有连接不变。 / Selection confirmed.');},b);
+  }
+  const delay=text(card,'button','测试延迟 / Test latency','secondary');delay.style.marginLeft='8px';delay.onclick=()=>run(async()=>{const d=await api('/proxies/'+encodeURIComponent(name)+'/delay?url='+encodeURIComponent('https://www.gstatic.com/generate_204')+'&timeout=5000');message(name+': '+d.delay+' ms · model_request=UNVERIFIED');},delay);
+  el('groups').append(card);
+ }
+ message('已刷新 / Refreshed · '+new Date().toLocaleTimeString());
+}
+async function run(fn,button){if(button)button.disabled=true;try{await fn();}catch(e){message(e.message||'请求失败 / Request failed');}finally{if(button)button.disabled=false;}}
+el('connect').onclick=()=>run(async()=>{
+ token='';const anonymous=await fetch('/version',{redirect:'error',credentials:'omit',signal:AbortSignal.timeout(8000)});if(anonymous.status!==401)throw Error('接口未强制认证，拒绝连接 / API must reject anonymous access');
+ token=el('secret').value;el('secret').value='';await refresh();el('login').hidden=true;el('refresh').disabled=false;el('connections').disabled=false;
+},el('connect'));
+el('refresh').onclick=()=>run(refresh,el('refresh'));
+el('connections').onclick=()=>run(async()=>{const d=await api('/connections');el('routes').hidden=false;el('routeText').textContent=(d.connections||[]).map(c=>(c.chains||[]).join(' ← ')+' · '+c.rule).join('\n')||'暂无活跃连接 / No active connections';},el('connections'));
+el('logout').onclick=()=>{token='';el('secret').value='';el('groups').replaceChildren();el('routeText').textContent='';el('routes').hidden=true;el('login').hidden=false;el('refresh').disabled=true;el('connections').disabled=true;message('已断开 / Disconnected');};
+</script></html>
