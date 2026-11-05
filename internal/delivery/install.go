@@ -21,6 +21,16 @@ type Receipt struct {
 	BinPath        string `json:"bin_path"`
 	LauncherSHA256 string `json:"launcher_sha256"`
 }
+
+type uninstallPending struct {
+	Format       int    `json:"format"`
+	Root         string `json:"root"`
+	Stage        string `json:"stage"`
+	Launcher     string `json:"launcher"`
+	LauncherHash string `json:"launcher_sha256"`
+	ReceiptHash  string `json:"receipt_sha256"`
+}
+
 type pending struct {
 	Format int    `json:"format"`
 	Old    string `json:"old"`
@@ -526,45 +536,13 @@ func update(ctx context.Context, a platform.App, r platform.Request) (map[string
 }
 
 func Uninstall(ctx context.Context, a platform.App, dry bool) (map[string]any, error) {
-	rec, e := readReceipt(a)
-	if e != nil {
-		return nil, e
-	}
-	root := installRoot(a)
-	cur, e := readCurrent(root)
-	if e != nil {
-		return nil, e
-	}
-	if _, _, e = generation(root, cur); e != nil {
-		return nil, e
-	}
-	data := map[string]any{"dry_run": dry, "removed": []string{rec.BinPath}, "retained": []string{root, a.Scope.ConfigRoot, filepath.Join(a.Scope.DataRoot, "cores")}, "active_core_preserved": true}
-	if dry {
-		return data, nil
-	}
-	e = platform.WithLock(ctx, a.Scope, func() error {
-		if e := recoverInstall(a); e != nil {
-			return e
-		}
-		current, e := readReceipt(a)
-		if e != nil {
-			return e
-		}
-		if current != rec {
-			return fail("installation-receipt-changed")
-		}
-		if e = os.Remove(rec.BinPath); e != nil {
-			return e
-		}
-		return syncDir(filepath.Dir(rec.BinPath))
-	})
-	return data, e
+	return uninstallProgram(ctx, a, dry)
 }
 
 func installationStatus(a platform.App) (map[string]any, error) {
 	rec, e := readReceipt(a)
 	if e != nil {
-		return nil, e
+		return notInstalled(), nil
 	}
 	id, e := readCurrent(installRoot(a))
 	if e != nil {
@@ -574,5 +552,5 @@ func installationStatus(a platform.App) (map[string]any, error) {
 	if e != nil {
 		return nil, e
 	}
-	return map[string]any{"receipt": rec, "generation": id, "version": m.Version}, nil
+	return map[string]any{"installed": true, "receipt": rec, "generation": id, "version": m.Version}, nil
 }

@@ -68,10 +68,14 @@ func Run(ctx context.Context, a platform.App, r platform.Request) (platform.Enve
 		case "installation-status":
 			data, e = installationStatus(a)
 		case "installation-recover":
-			e = platform.WithLock(ctx, a.Scope, func() error { return recoverInstall(a) })
-			if e == nil {
-				data, e = installationStatus(a)
-			}
+			e = platform.WithLock(ctx, a.Scope, func() error {
+				if journalExists, je := optionalExists(uninstallJournal(a)); je == nil && journalExists {
+					return recoverUninstall(a)
+				} else if je != nil {
+					return je
+				}
+				return recoverInstall(a)
+			})
 		case "installation-uninstall":
 			data, e = Uninstall(ctx, a, r.Has("dry-run"))
 		case "release-check", "release-fetch":

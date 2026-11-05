@@ -202,7 +202,28 @@ func TestLinuxBootstrapAndUninstall(t *testing.T) {
 	if _, e := Uninstall(context.Background(), a, false); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := os.Stat(filepath.Join(installRoot(a), "receipt.json")); e != nil {
-		t.Fatal("uninstall removed data", e)
+	if _, e := os.Stat(installRoot(a)); !os.IsNotExist(e) {
+		t.Fatal("program installation root remained", e)
+	}
+	status, e := installationStatus(a)
+	if e != nil || status["installed"] != false || status["version"] != nil {
+		t.Fatal(status, e)
+	}
+	if _, e := Uninstall(context.Background(), a, false); e != nil {
+		t.Fatal("second uninstall was not idempotent", e)
+	}
+	source = fixture(t, "0.2.0", "reinstalled")
+	if _, e := Bootstrap(context.Background(), a, source, bin, false); e != nil {
+		t.Fatal("reinstall after full uninstall failed", e)
+	}
+	config := filepath.Join(a.Scope.ConfigRoot, "manager.yaml")
+	if e := os.WriteFile(config, []byte("preserved"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := Uninstall(context.Background(), a, false); e != nil {
+		t.Fatal(e)
+	}
+	if b, e := os.ReadFile(config); e != nil || string(b) != "preserved" {
+		t.Fatal("uninstall changed configuration", string(b), e)
 	}
 }
