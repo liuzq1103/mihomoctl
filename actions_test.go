@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -80,8 +82,18 @@ func TestOpsDedupeIndependently(t *testing.T) {
 	app := NewApp(newDemoSource(), &stubCli{env: Envelope{Overall: "PASS"}}, 80, 24, pageOverview, true)
 	app.post("op:stop", func() apiMsg { return apiMsg{kind: "op:stop", opName: "stop"} })
 	app.post("op:provider x", func() apiMsg { return apiMsg{kind: "op:provider x", opName: "provider x"} })
-	for i := 0; i < 2; i++ {
-		app.onAPI(<-app.apiCh)
+	// Drain until both ops landed: onAPI's refresh posts extra fetches whose
+	// sends may interleave, so arrival order cannot be assumed.
+	seen := map[string]bool{}
+	for i := 0; i < 128 && len(seen) < 2; i++ {
+		msg := <-app.apiCh
+		if strings.HasPrefix(msg.kind, "op:") {
+			seen[msg.kind] = true
+		}
+		app.onAPI(msg)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("both ops must run under distinct keys, saw %v", seen)
 	}
 	if app.inflight["op:stop"] || app.inflight["op:provider x"] {
 		t.Fatal("each op must clear its own inflight key on completion")
@@ -96,5 +108,57 @@ func TestRuntimeRefreshClearsInflight(t *testing.T) {
 	app.onAPI(<-app.apiCh)
 	if app.inflight["cli:status"] {
 		t.Fatal("runtime status fetch must clear its dedupe key, or the page never refetches")
+	}
+}
+
+// Regression: a FAIL envelope with exit 0 used to be announced as 完成.
+func TestLifecycleFailEnvelopeReportsFailure(t *testing.T) {
+	app := &App{cli: &stubCli{env: Envelope{
+		Overall: "FAIL", Errors: []ErrDoc{{Code: "not-running", Detail: "服务未运行"}},
+	}}}
+	if msg := app.runLifecycleCLI("stop"); msg.err == nil {
+		t.Fatal("FAIL envelope must surface as an error, not as 完成")
+	}
+}
+
+// Regression: a stale subscription preview (the user re-previewed while the
+// first request was in flight) used to install as current.
+func TestStaleSubscriptionPreviewIgnored(t *testing.T) {
+	app := NewApp(newDemoSource(), &stubCli{env: Envelope{Overall: "PASS"}}, 80, 24, pageSubscriptions, true)
+	app.subSeq = 2 // the user already re-previewed
+	preview := map[string]any{"id": "x", "sha256": "y"}
+	app.onAPI(apiMsg{kind: "cli:subscription-preview:1", cliKind: "subscription-preview", preview: preview, subSeq: 1})
+	if app.subPreview != nil {
+		t.Fatal("stale preview must not install")
+	}
+	app.onAPI(apiMsg{kind: "cli:subscription-preview:2", cliKind: "subscription-preview", preview: preview, subSeq: 2})
+	if app.subPreview == nil {
+		t.Fatal("current preview must install")
+	}
+}
+
+// Regression: PgUp on the logs page used to be a visual no-op — the window
+// always re-showed the newest rows regardless of logOff.
+func TestLogsPagingRevealsOlderLines(t *testing.T) {
+	app := NewApp(newDemoSource(), &stubCli{env: Envelope{Overall: "PASS"}}, 100, 24, pageLogs, true)
+	for i := 0; i < 60; i++ {
+		app.logs = append(app.logs, LogLine{Type: "info", Payload: fmt.Sprintf("L%02dX", i)})
+	}
+	app.draw()
+	if plain := app.scr.DumpPlain(); !strings.Contains(plain, "L59X") || strings.Contains(plain, "L20X") {
+		t.Fatalf("newest window must show L59..L40, got:\n%s", plain)
+	}
+	app.logOff = 40
+	app.draw()
+	if plain := app.scr.DumpPlain(); !strings.Contains(plain, "L19X") || strings.Contains(plain, "L59X") {
+		t.Fatalf("logOff=40 must reveal L19..L00, got:\n%s", plain)
+	}
+	if app.logOff != 40 {
+		t.Fatalf("draw must not disturb a valid offset, got %d", app.logOff)
+	}
+	app.logOff = 500 // stale past the match set: draw-time clamp must fix it
+	app.draw()
+	if app.logOff != 59 {
+		t.Fatalf("offset must clamp to len(rows)-1, got %d", app.logOff)
 	}
 }

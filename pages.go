@@ -309,6 +309,13 @@ func (app *App) drawConnections() {
 		scr.TextLimit(78, y, 10, humanBytes(conn.Download), Green)
 		shown++
 	}
+	if shown == 0 && off > 0 {
+		// The filter shrank the match set above the window; re-anchor to the
+		// top so matches are visible instead of an empty table. The recursive
+		// call terminates: the second pass runs with off == 0.
+		app.connOff = 0
+		app.drawConnections()
+	}
 }
 
 func (app *App) drawLogs() {
@@ -323,9 +330,14 @@ func (app *App) drawLogs() {
 		}
 		rows = append(rows, line)
 	}
-	// rows[0] is newest; show the window ending at len(rows)-logOff.
-	end := maxInt(0, len(rows)-app.logOff)
-	start := maxInt(0, end-height)
+	// Draw-time clamp: a stale offset (the filter shrank the match set after
+	// the last scroll) must never blank the page.
+	app.logOff = min(app.logOff, maxInt(0, len(rows)-1))
+	// rows[0] is the newest line; logOff rows are skipped from the top, so
+	// PgUp (larger logOff) reveals older history instead of re-showing the
+	// newest window.
+	start := min(app.logOff, len(rows))
+	end := min(start+height, len(rows))
 	shown := rows[start:end]
 	for i, line := range shown {
 		y := top + height - 1 - i
@@ -341,6 +353,8 @@ func (app *App) drawLogs() {
 	}
 	if len(app.logs) == 0 {
 		scr.Text(2, top, "等待日志流…", Dim)
+	} else if len(rows) == 0 {
+		scr.Text(2, top, "没有匹配当前过滤词的日志行", Dim)
 	}
 }
 

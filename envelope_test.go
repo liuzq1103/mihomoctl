@@ -32,3 +32,19 @@ func TestLimitWriterRejectsSingleOversizedWrite(t *testing.T) {
 		t.Fatalf("nothing may be buffered from a rejected write, got %d bytes", buf.Len())
 	}
 }
+
+// Soft mode is for diagnostic streams (stderr): it keeps draining the child
+// instead of failing a run that would otherwise succeed.
+func TestLimitWriterSoftModeDiscardsPastCap(t *testing.T) {
+	var buf bytes.Buffer
+	w := &limitWriter{buf: &buf, max: 4, soft: true}
+	if n, err := w.Write([]byte("12345678")); err != nil || n != 8 {
+		t.Fatalf("soft write past the cap must absorb the bytes, got %d %v", n, err)
+	}
+	if !w.truncated {
+		t.Fatal("truncated flag must still be set")
+	}
+	if buf.String() != "1234" {
+		t.Fatalf("only the first max bytes may be buffered, got %q", buf.String())
+	}
+}

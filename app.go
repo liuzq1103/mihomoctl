@@ -85,6 +85,12 @@ type apiMsg struct {
 	// userCmd marks a CLI call the operator typed, so its completion deserves
 	// a notice; page auto-refreshes must stay silent.
 	userCmd bool
+	// silent marks automatic page refreshes: their failures show in the
+	// status bar only, never as a notice or a clobbered lastResult.
+	silent bool
+	// subSeq ties a subscription preview to the request that launched it,
+	// so a stale result never installs after the user re-previews.
+	subSeq int
 }
 
 // pendingAction is a modal confirm; destructive verbs need one explicit key.
@@ -186,6 +192,9 @@ type App struct {
 	subID      string
 	subSHA     string
 	subBusy    bool
+	// subSeq invalidates in-flight previews: any result whose seq does not
+	// match was launched for an older URL/policy and must be discarded.
+	subSeq int
 
 	// CLI-backed pages.
 	runtimeDoc  []string
@@ -281,6 +290,9 @@ func (app *App) refresh(page string) {
 			return apiMsg{kind: "providers", err: err, providers: &p}
 		})
 	case pageLogs:
+		// Mark intent at request time: a failed first open must also be
+		// retried by onTick, not only drops of an established stream.
+		app.logsOpened = true
 		if app.logCh == nil {
 			app.post("logs-open", func() apiMsg {
 				ch, err := app.src.StartLogs(app.streamCtx)
@@ -288,9 +300,17 @@ func (app *App) refresh(page string) {
 			})
 		}
 	case pageRuntime:
-		app.post("cli:status", func() apiMsg { return app.runCLI("cli:status", "status", nil, "status") })
+		app.post("cli:status", func() apiMsg {
+			msg := app.runCLI("cli:status", "status", nil, "status")
+			msg.silent = true // auto refresh: errors stay in the status bar
+			return msg
+		})
 	case pageProfile:
-		app.post("cli:profile", func() apiMsg { return app.loadProfile() })
+		app.post("cli:profile", func() apiMsg {
+			msg := app.loadProfile()
+			msg.silent = true
+			return msg
+		})
 	}
 }
 
@@ -333,11 +353,14 @@ func (app *App) Run() error {
 				// Stream ended (closed channel stays ready forever in select);
 				// nil it to stop a busy-spin and let onTick reconnect.
 				app.trafficCh = nil
+				app.setNotice("流量数据流中断，自动重连中…")
 			}
 		case line, ok := <-app.logCh:
 			if !ok {
 				app.logCh = nil
-			} else if !app.logPaused {
+				app.setNotice("日志流中断，自动重连中…")
+			} else if !app.logPaused || line.Type == "error" {
+				// Pausing holds back the firehose, never stream-break markers.
 				app.logs = append(app.logs, line)
 				if len(app.logs) > 1000 {
 					app.logs = app.logs[len(app.logs)-1000:]
@@ -410,8 +433,9 @@ func (app *App) onAPI(msg apiMsg) {
 	delete(app.inflight, msg.kind)
 	if msg.err != nil {
 		app.errs[msg.kind] = msg.err.Error()
-		// CLI ops surface as a notice plus a failed result, not a stuck page.
-		if strings.HasPrefix(msg.kind, "cli:") {
+		// CLI ops surface as a notice plus a failed result, not a stuck page —
+		// except automatic page refreshes, which stay status-bar-only.
+		if strings.HasPrefix(msg.kind, "cli:") && !msg.silent {
 			app.lastTitle, app.lastResult = msg.cliKind, []string{"操作未完成：" + msg.err.Error()}
 			app.setNotice(msg.cliKind + " 失败：" + truncByWidth(msg.err.Error(), 80))
 		}
@@ -519,7 +543,6 @@ func (app *App) onAPI(msg apiMsg) {
 	case "logs-open":
 		if msg.logs != nil {
 			app.logCh = msg.logs
-			app.logsOpened = true
 		}
 	case "select":
 		app.refresh(pageProxies)
@@ -537,10 +560,14 @@ func (app *App) onAPI(msg apiMsg) {
 			app.setNotice("批量测速完成")
 		}
 	}
+	// Silent auto-refreshes update their page state below but must not touch
+	// the operator's last result ('v') or fire notices.
 	if msg.cliKind != "" {
-		app.lastTitle, app.lastResult = msg.cliKind, msg.lines
-		if msg.userCmd {
-			app.setNotice(msg.cliKind + " 完成，按 v 查看结果")
+		if !msg.silent {
+			app.lastTitle, app.lastResult = msg.cliKind, msg.lines
+			if msg.userCmd {
+				app.setNotice(msg.cliKind + " 完成，按 v 查看结果")
+			}
 		}
 		switch msg.cliKind {
 		case "status":
@@ -559,11 +586,20 @@ func (app *App) onAPI(msg apiMsg) {
 		app.delays[key] = fmt.Sprintf("%d", msg.delayMS)
 	}
 	// Subscription preview/apply results drive the subscription page state.
-	if msg.kind == "cli:subscription-preview" && msg.preview != nil {
-		app.subPreview = msg.preview
-		app.subID = stringValue(msg.preview["id"])
-		app.subSHA = stringValue(msg.preview["sha256"])
-		app.setNotice("预览就绪：y 保存并启动（会先确认）")
+	// Stale previews (the user changed URL or policy after the request
+	// launched) must never install: each result carries its request's seq.
+	if strings.HasPrefix(msg.kind, "cli:subscription-preview") {
+		switch {
+		case msg.subSeq != app.subSeq:
+			app.setNotice("预览已过期（来源或策略已变更），请重新预览")
+		case msg.preview != nil:
+			app.subPreview = msg.preview
+			app.subID = stringValue(msg.preview["id"])
+			app.subSHA = stringValue(msg.preview["sha256"])
+			app.setNotice("预览就绪：y 保存并启动（会先确认）")
+		default:
+			app.setNotice("预览被拒绝，按 v 查看原因")
+		}
 	}
 	if msg.kind == "cli:subscription-apply" {
 		app.subBusy = false
@@ -657,6 +693,7 @@ func (app *App) changePage(page string) {
 	// A filter is page-scoped intent; never let a stale one silently hide
 	// content on the next page (there is no always-visible filter indicator).
 	app.filter, app.filtering = "", false
+	app.rebuildNodes() // drop the previously filtered node list immediately
 	app.refresh(page)
 	if page == pageOverview {
 		app.openTraffic()
@@ -1021,7 +1058,12 @@ func (app *App) onFilterKey(k Key) {
 	resetScroll := func() { app.connOff, app.logOff = 0, 0 }
 	switch k.Type {
 	case KeyEsc:
+		// Esc cancels the whole filter, not just the editing line: a filter
+		// left applied with no indicator looks like vanishing content.
 		app.filtering = false
+		app.filter = ""
+		app.connOff, app.logOff = 0, 0
+		app.rebuildNodes()
 	case KeyEnter:
 		app.filtering = false
 		resetScroll()
@@ -1234,7 +1276,7 @@ func (app *App) cmdDNS(rest []string) {
 }
 
 const helpText = `页面：1 首页 | 2 节点 | 3 订阅 | 4 连接 | 5 规则 | 6 日志 | 7 接入 | 8 提供商 | 9 诊断 | 0 服务
-通用：Tab/Shift+Tab 切页或切栏 | ↑↓ 移动 | Enter 确认 | / 过滤 | r 刷新 | v 上次结果 | : 命令 | q 退出
+通用：Tab/Shift+Tab 切页或切栏 | ↑↓ 移动 | Enter 确认 | / 过滤（节点/连接/日志） | r 刷新 | v 上次结果 | : 命令 | q 退出
 节点：t 测速 | T 批量(8 并发) | s 排序 | [ ] 换组 | Tab 切换分组/节点栏
 订阅：u 输入 URL | f 选择文件 | p 切换策略 | y 保存并启动
 诊断：h health | d doctor | j journal | u diagnose url | 大写流程同 Textual 版

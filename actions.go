@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,6 +24,15 @@ func (app *App) runLifecycleCLI(verb string) apiMsg {
 	env, err := app.cli.Run(verb)
 	if err != nil {
 		return apiMsg{kind: "op:" + verb, opName: verb, err: err}
+	}
+	// A FAIL envelope is a failed op even when the CLI exits 0 with JSON on
+	// stdout; announcing it as 完成 would lie to the operator.
+	if env.Overall != "PASS" {
+		detail := "overall-" + env.Overall
+		if len(env.Errors) > 0 && env.Errors[0].Detail != "" {
+			detail = env.Errors[0].Detail
+		}
+		return apiMsg{kind: "op:" + verb, opName: verb, err: errors.New(detail)}
 	}
 	// Envelope length varies with the verb's output; slicing [1:4] unguarded
 	// panics on short envelopes (which would kill the whole TUI).
@@ -197,6 +207,7 @@ func (app *App) cyclePolicy() {
 			app.subPolicy = policyOrder[(index+1)%len(policyOrder)]
 			app.subPreview = nil
 			app.subID, app.subSHA = "", ""
+			app.subSeq++ // any in-flight preview was made for the old policy
 			app.setNotice("策略已切换为 " + policyNames[app.subPolicy] + "，请重新预览")
 			return
 		}
@@ -209,29 +220,35 @@ func (app *App) cyclePolicy() {
 func (app *App) subscriptionPreview(kind, value string) {
 	app.subKind = kind
 	app.subPreview = nil
+	app.subID, app.subSHA = "", ""
 	app.setNotice("正在生成预览…")
 	policy := app.subPolicy // snapshot: the goroutine must not race 'p'
-	app.post("cli:subscription-preview", func() apiMsg {
+	// The seq in the key lets a re-preview (new URL or policy) launch while
+	// an older request is still in flight; the stale result is discarded.
+	app.subSeq++
+	key := fmt.Sprintf("cli:subscription-preview:%d", app.subSeq)
+	seq := app.subSeq
+	app.post(key, func() apiMsg {
 		var env Envelope
 		var err error
 		if kind == "url" {
 			var raw []byte
 			raw, err = app.src.Download(value)
 			if err != nil {
-				return apiMsg{kind: "cli:subscription-preview", cliKind: "subscription-preview", err: err}
+				return apiMsg{kind: key, cliKind: "subscription-preview", err: err, subSeq: seq}
 			}
 			env, err = app.cli.RunWithStdin(raw, "subscription", "preview", "--stdin", "--policy", policy)
 		} else {
 			env, err = app.cli.Run("subscription", "preview", "--source-file", value, "--policy", policy)
 		}
 		if err != nil {
-			return apiMsg{kind: "cli:subscription-preview", cliKind: "subscription-preview", err: err}
+			return apiMsg{kind: key, cliKind: "subscription-preview", err: err, subSeq: seq}
 		}
 		if env.Overall == "PASS" && env.Data != nil {
-			return apiMsg{kind: "cli:subscription-preview", cliKind: "subscription-preview",
-				lines: envelopeLines(env), preview: env.Data}
+			return apiMsg{kind: key, cliKind: "subscription-preview",
+				lines: envelopeLines(env), preview: env.Data, subSeq: seq}
 		}
-		return apiMsg{kind: "cli:subscription-preview", cliKind: "subscription-preview", lines: envelopeLines(env)}
+		return apiMsg{kind: key, cliKind: "subscription-preview", lines: envelopeLines(env), subSeq: seq}
 	})
 }
 

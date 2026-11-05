@@ -69,6 +69,10 @@ func inspectProcess(pid string, proxyPort int) ([]string, error) {
 		switch {
 		case !set:
 			continue
+		case proxyPort <= 0 && (strings.Contains(value, "127.0.0.1") || strings.Contains(value, "localhost")):
+			// Listener port unknown (configs fetch failed or not run): say so
+			// instead of misclassifying every loopback value as 其他地址.
+			pointing = append(pointing, key+" → 本机回环（监听端口未知，未逐一确认）")
 		case strings.Contains(value, fmt.Sprintf("127.0.0.1:%d", proxyPort)):
 			pointing = append(pointing, key+" → 本机代理")
 		default:

@@ -58,16 +58,26 @@ func newRealCli(binary string) CliSource {
 
 // limitWriter bounds how much a child process can buffer into memory: past
 // max it errors (which kills the child), instead of growing the buffer for
-// the whole run and checking the size only after exit.
+// the whole run and checking the size only after exit. Soft mode keeps
+// draining the child but discards the bytes — for streams that are pure
+// diagnostics (stderr), where killing a succeeding run would be worse.
 type limitWriter struct {
 	buf       *bytes.Buffer
 	max       int
 	truncated bool
+	soft      bool
 }
 
 func (w *limitWriter) Write(p []byte) (int, error) {
 	if w.buf.Len()+len(p) > w.max {
 		w.truncated = true
+		if w.soft {
+			// Keep whatever still fits, absorb and discard the rest.
+			if room := w.max - w.buf.Len(); room > 0 {
+				w.buf.Write(p[:room])
+			}
+			return len(p), nil
+		}
 		return 0, errors.New("mihomoctl-output-too-large")
 	}
 	return w.buf.Write(p)
@@ -85,7 +95,7 @@ func (c *realCli) run(stdin []byte, args ...string) (Envelope, error) {
 	cmd.Env = append(os.Environ(), "MIHOMOCTL_NO_UPDATE_CHECK=1")
 	var stdoutBuf, stderrBuf bytes.Buffer
 	stdout := &limitWriter{buf: &stdoutBuf, max: 16 << 20}
-	stderr := &limitWriter{buf: &stderrBuf, max: 1 << 20}
+	stderr := &limitWriter{buf: &stderrBuf, max: 1 << 20, soft: true}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	done := make(chan error, 1)
@@ -97,13 +107,16 @@ func (c *realCli) run(stdin []byte, args ...string) (Envelope, error) {
 	defer timer.Stop()
 	select {
 	case err := <-done:
-		if stdout.truncated || stderr.truncated {
+		if stdout.truncated {
 			return Envelope{}, fmt.Errorf("mihomoctl-response-too-large")
 		}
 		if err != nil && stdoutBuf.Len() == 0 {
 			text := strings.TrimSpace(stderrBuf.String())
 			if len(text) > 300 {
 				text = text[:300]
+			}
+			if stderr.truncated {
+				text += " …（stderr 超过 1 MiB 已截断）"
 			}
 			return Envelope{}, errors.New(text)
 		}
