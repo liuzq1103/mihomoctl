@@ -208,6 +208,12 @@ func SubscriptionInput(ctx context.Context, a platform.App, value, kind, policy 
 	if err := a.Scope.RequireMutation(); err != nil {
 		return failureEnvelope(command, scope, err), nil
 	}
+	// Recover every module's journals before the first configuration read:
+	// the guided-shape snapshot below must describe the recovered state, not
+	// a crashed candidate a pending journal is about to roll back.
+	if err := recoverBeforeSnapshot(ctx, a.Scope); err != nil {
+		return failureEnvelope(command, scope, err), nil
+	}
 	if kind == "" {
 		kind = "url"
 	}
@@ -275,6 +281,11 @@ func SubscriptionDiscard(ctx context.Context, a platform.App, identifier string)
 	if err := a.Scope.RequireMutation(); err != nil {
 		return failureEnvelope(command, scope, err), nil
 	}
+	// Recovery first: discard must not act on a pre-recovery view of the
+	// staged plans or the configuration beside them.
+	if err := recoverBeforeSnapshot(ctx, a.Scope); err != nil {
+		return failureEnvelope(command, scope, err), nil
+	}
 	configPath, _, err := resolveRoutingContext(a, platform.Request{})
 	if err != nil {
 		return failureEnvelope(command, scope, err), nil
@@ -299,6 +310,14 @@ func SubscriptionDiscard(ctx context.Context, a platform.App, identifier string)
 func SubscriptionSaveAndStart(ctx context.Context, a platform.App, identifier, digest string) (platform.Envelope, error) {
 	command, scope := "subscription", scopeLabel(a.Scope.System)
 	if err := a.Scope.RequireMutation(); err != nil {
+		return failureEnvelope(command, scope, err), nil
+	}
+	// Recovery before the snapshot: validateStaged reads the current
+	// configuration as the activation's "before" bytes. Without this, a
+	// runtime journal recovered later (inside CommitAndStart's own lock)
+	// would restore different bytes and the stale-before refusal would
+	// reject a valid activation of the recovered state.
+	if err := recoverBeforeSnapshot(ctx, a.Scope); err != nil {
 		return failureEnvelope(command, scope, err), nil
 	}
 	configPath, manager, err := resolveRoutingContext(a, platform.Request{})

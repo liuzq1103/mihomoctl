@@ -39,7 +39,22 @@ chmod u+x "$work/bundle/bin/deliveryctl"
 "$cli" core list --json
 core="$XDG_DATA_HOME/mihomoctl-go/cores/v1.19.33-$(printf %.16s "$sha")/mihomo"
 "$core" -v
-"$cli" init --core "$core" --json
+generation=$(cat "$XDG_DATA_HOME/mihomoctl-go/install/current")
+bundled_core="$XDG_DATA_HOME/mihomoctl-go/install/generations/$generation/core/mihomo"
+"$cli" init --core "$bundled_core" --json
+"$cli" start --json
+started=yes
+bundled_pid=$("$cli" status --json | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')
+if "$cli" installation uninstall --json > "$work/refused-uninstall.json"; then
+    echo 'Uninstall incorrectly removed a configured bundled core' >&2
+    exit 1
+fi
+grep 'uninstall-core-inside-program-root' "$work/refused-uninstall.json"
+[ -x "$bundled_core" ]
+[ "$bundled_pid" = "$("$cli" status --json | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')" ]
+"$cli" stop --json
+started=no
+"$cli" core adopt --path "$core" --json
 "$cli" config validate --json
 "$cli" start --json
 started=yes
@@ -67,6 +82,14 @@ started=no
 "$cli" installation uninstall --dry-run --json
 "$cli" installation uninstall --json
 [ ! -e "$cli" ]
+[ ! -e "$XDG_DATA_HOME/mihomoctl-go/install" ]
 [ -f "$core" ]
 [ -f "$XDG_CONFIG_HOME/mihomoctl-go/manager.yaml" ]
-echo 'native offline bundle smoke: verified CLI, core receipt/list, core init/config/start, same-PID update preservation, uninstall retention'
+"$work/bundle/bin/deliveryctl" installation status
+"$work/bundle/bin/deliveryctl" installation uninstall
+sh "$work/bundle/install.sh" --bin-dir "$work/bin"
+"$cli" version --json
+"$cli" installation uninstall --json
+[ ! -e "$XDG_DATA_HOME/mihomoctl-go/install" ]
+[ -f "$core" ]
+echo 'native offline bundle smoke: verified CLI/core, same-PID update, full program uninstall, repeat uninstall and reinstall; config/independent core preserved'

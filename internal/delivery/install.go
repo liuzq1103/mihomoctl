@@ -20,15 +20,7 @@ type Receipt struct {
 	Project        string `json:"project"`
 	BinPath        string `json:"bin_path"`
 	LauncherSHA256 string `json:"launcher_sha256"`
-}
-
-type uninstallPending struct {
-	Format       int    `json:"format"`
-	Root         string `json:"root"`
-	Stage        string `json:"stage"`
-	Launcher     string `json:"launcher"`
-	LauncherHash string `json:"launcher_sha256"`
-	ReceiptHash  string `json:"receipt_sha256"`
+	InstallationID string `json:"installation_id,omitempty"`
 }
 
 type pending struct {
@@ -55,6 +47,9 @@ func readReceipt(a platform.App) (Receipt, error) {
 		return rec, e
 	}
 	if rec.Format != 1 || rec.Project != Project || !filepath.IsAbs(rec.BinPath) || filepath.Base(rec.BinPath) != "mihomoctl" || rec.LauncherSHA256 != platform.Hash(launcher(root)) {
+		return rec, fail("installation-receipt-invalid")
+	}
+	if rec.InstallationID != "" && !shaPattern.MatchString(rec.InstallationID) {
 		return rec, fail("installation-receipt-invalid")
 	}
 	b, e = platform.ReadPrivate(rec.BinPath)
@@ -358,6 +353,16 @@ func Bootstrap(ctx context.Context, a platform.App, source, binDir string, dry b
 	if !filepath.IsAbs(binDir) || strings.ContainsAny(binDir, "\n\r\x00") {
 		return nil, usage("installation-bin-dir-invalid")
 	}
+	if pending, e := optionalExists(uninstallJournal(a)); e != nil {
+		return nil, e
+	} else if pending {
+		if dry {
+			return nil, fail("uninstall-recovery-required")
+		}
+		if e = platform.WithLock(ctx, a.Scope, func() error { return recoverUninstall(a) }); e != nil {
+			return nil, e
+		}
+	}
 	root := installRoot(a)
 	bin := filepath.Join(binDir, "mihomoctl")
 	data := map[string]any{"version": m.Version, "bin_path": bin, "dry_run": dry, "active_core_preserved": true}
@@ -374,6 +379,9 @@ func Bootstrap(ctx context.Context, a platform.App, source, binDir string, dry b
 		return data, nil
 	}
 	e = platform.WithLock(ctx, a.Scope, func() error {
+		if e := recoverUninstall(a); e != nil {
+			return e
+		}
 		if _, e := os.Lstat(root); !os.IsNotExist(e) {
 			return fail("installation-root-exists")
 		}
@@ -388,7 +396,8 @@ func Bootstrap(ctx context.Context, a platform.App, source, binDir string, dry b
 			return e
 		}
 		if m.Core != nil {
-			data["core"] = map[string]any{"binary": filepath.Join(root, "generations", id, "core", "mihomo"), "version": m.Core.Version, "activated": false, "provenance": m.Core.Provenance}
+			data["core"] = map[string]any{"binary": filepath.Join(root, "generations", id, "core", "mihomo"), "version": m.Core.Version, "activated": false, "provenance": m.Core.Provenance,
+				"program_owned": true, "uninstall_policy": "Install and adopt an independent core with core install --asset before uninstalling this program."}
 		}
 		if e = platform.CheckPath(binDir); e != nil {
 			return e
@@ -413,7 +422,11 @@ func Bootstrap(ctx context.Context, a platform.App, source, binDir string, dry b
 		if e != nil {
 			return e
 		}
-		rec := Receipt{1, Project, bin, platform.Hash(content)}
+		installationID, e := platform.Token()
+		if e != nil {
+			return e
+		}
+		rec := Receipt{Format: 1, Project: Project, BinPath: bin, LauncherSHA256: platform.Hash(content), InstallationID: installationID}
 		if e = platform.WriteJSON(filepath.Join(root, "receipt.json"), rec); e != nil {
 			return e
 		}
@@ -540,9 +553,26 @@ func Uninstall(ctx context.Context, a platform.App, dry bool) (map[string]any, e
 }
 
 func installationStatus(a platform.App) (map[string]any, error) {
+	if pending, e := optionalExists(uninstallJournal(a)); e != nil {
+		return nil, e
+	} else if pending {
+		journal, e := loadRemoval(a)
+		if e != nil {
+			return nil, e
+		}
+		if e = validateRemovalStatus(a, journal); e != nil {
+			return nil, e
+		}
+		return map[string]any{"installed": false, "status": "uninstalling", "recovery_required": true, "version": nil}, nil
+	}
+	if exists, e := optionalExists(installRoot(a)); e != nil {
+		return nil, e
+	} else if !exists {
+		return notInstalled(), nil
+	}
 	rec, e := readReceipt(a)
 	if e != nil {
-		return notInstalled(), nil
+		return nil, e
 	}
 	id, e := readCurrent(installRoot(a))
 	if e != nil {
@@ -550,6 +580,11 @@ func installationStatus(a platform.App) (map[string]any, error) {
 	}
 	_, m, e := generation(installRoot(a), id)
 	if e != nil {
+		return nil, e
+	}
+	// Status validates retained program generations and refuses undeclared
+	// program-root files as well as drift in the active receipt/generation.
+	if _, e = collectRemoval(a); e != nil {
 		return nil, e
 	}
 	return map[string]any{"installed": true, "receipt": rec, "generation": id, "version": m.Version}, nil

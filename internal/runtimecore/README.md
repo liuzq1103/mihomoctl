@@ -15,6 +15,12 @@ receipt is cleared transactionally and restored on failure. Candidate activation
 failure restores the original configuration and running/stopped state, including
 after interruption. It is a private helper, not an additional public command.
 
+`NewLogRedactor(app) (func(string) string, error)` resolves an immutable secret
+snapshot once for a streaming client, including all configured profile password
+files. The returned function reads no files per line and is safe for concurrent
+callers. If creation fails, a client must drop log messages rather than fall back
+to unredacted output. Recreate the snapshot when creating a new source client.
+
 `Journal(ctx, app, since, until, lines) (platform.Envelope, error)` is the private
 history API. It checks scope and runtime/unit ownership and returns redacted
 `data.entries`. Journal time arguments use separate `--since=`/`--until=` argv
@@ -38,6 +44,14 @@ Runtime mutations use the shared scope lock. Its descriptor is marked close-on-e
 locally so a child cannot retain the lock after manager death. File and compound
 transactions live in persistent state, retain private original bytes and runtime
 intent, and recover before another mutation. Readers refuse outstanding journals.
+The package registers its recovery callback as `runtimecore`, order 20, with
+`platform.RegisterRecovery`. It restores compound state then file transactions
+inside the coordinator's existing lock without reacquiring it. Its pending
+predicate inspects only persistent `StateRoot/compound.json` and
+`StateRoot/transaction.json`. Routing recovery must register at an earlier order
+so paired journals restore their shared files in the right sequence. Command
+integration tests cover runtime recovery triggered by a routing handler and
+paired routing/runtime snapshots of the same file.
 Adoption, reset, and TUN changes commit only after their required runtime effects.
 An interrupted change restores the original files, reloads owned definitions,
 restarts a previously running runtime, and re-verifies TUN ownership and routes.
@@ -53,6 +67,10 @@ authenticated HTTP acceptance, anonymous SOCKS rejection, authenticated SOCKS
 acceptance, and both anonymous and authenticated controller results. Egress is
 optional. Exec requires local health and uses `execve`; direct removes only the
 eight proxy variables and also uses `execve`.
+Local probes allow up to five seconds per response, matching the original
+reader timeout. The default startup budget remains ten seconds. A real child
+regression delays its authenticated HEAD response for four seconds and must
+still pass the default startup gate.
 
 Systemd installation never enables a service, starts it, changes linger, or
 restarts consuming application units. Existing unit text, loaded definitions,
@@ -162,6 +180,14 @@ The suite refuses existing `/etc/mihomoctl-go`, `/var/lib/mihomoctl-go`,
 `/var/cache/mihomoctl-go`, `/run/mihomoctl-go`, the fixed unit/drop-ins,
 the `mihomoctl-go` account, or an existing `mihomo0`. It claims a private receipt
 in the fixed system scope and creates two independent disposable non-root UIDs.
+Executable fixtures select an existing trusted parent from `/opt`,
+`/usr/local/lib`, `/usr/lib`, `/etc`, or `/`. Every ancestor must be root-owned,
+non-symlinked, and not writable by group or others before a disposable child is
+created. Hosted-image directories such as `/usr/local/lib` or `/opt` are skipped
+when they fail these checks; their ownership and permissions are never changed.
+The executable trust check remains strict. Isolated root tests reproduce both a
+writable parent and a safe-looking leaf below a writable ancestor, and verify
+that selection falls back without modifying foreign directories.
 It checks concurrent user runtimes, different listener ports, private
 credentials and cross-UID refusal, then installs/starts/checks the real system
 service. An isolated loopback sshd and generated public keys verify both users'

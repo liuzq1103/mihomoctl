@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -132,7 +133,7 @@ func testCore() int {
 }
 func serveProxy(c net.Conn, creds credentials) {
 	defer c.Close()
-	c.SetDeadline(time.Now().Add(3 * time.Second))
+	c.SetDeadline(time.Now().Add(6 * time.Second))
 	reader := bufio.NewReader(c)
 	first, e := reader.Peek(1)
 	if e != nil {
@@ -184,12 +185,44 @@ func serveProxy(c net.Conn, creds credentials) {
 	if e != nil {
 		return
 	}
+	if r.Header.Get("Proxy-Connection") != "close" || r.Header.Get("Connection") != "close" {
+		fmt.Fprint(c, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+		return
+	}
 	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(creds.Username+":"+creds.Password))
 	status := "407 Proxy Authentication Required"
 	if r.Header.Get("Proxy-Authorization") == auth {
+		if delay, e := strconv.Atoi(os.Getenv("RUNTIMECORE_HTTP_DELAY_MS")); e == nil && delay > 0 && delay <= 5000 {
+			time.Sleep(time.Duration(delay) * time.Millisecond)
+		}
 		status = "502 Bad Gateway"
 	}
 	fmt.Fprintf(c, "HTTP/1.1 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status)
+}
+
+func TestNativeStartAcceptsFourSecondHTTPHealthResponse(t *testing.T) {
+	a := initializedApp(t)
+	x, e := resolve(a, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if defaults(x.Profile).Health.Timeout != 10 {
+		t.Fatal("default startup budget must remain ten seconds")
+	}
+	t.Setenv("RUNTIMECORE_HTTP_DELAY_MS", "4000")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	started := time.Now()
+	doc, e := Run(ctx, a, platform.Request{Command: []string{"start"}})
+	if e != nil || doc.Overall != "PASS" {
+		t.Fatalf("four-second authenticated HEAD was blocked during default startup: %v %+v", e, doc)
+	}
+	if time.Since(started) < 4*time.Second {
+		t.Fatal("test core did not exercise delayed authenticated response")
+	}
+	if ctx.Err() != nil {
+		t.Fatal("health checks exhausted ten-second startup budget", ctx.Err())
+	}
 }
 func initializedApp(t *testing.T) platform.App {
 	t.Helper()

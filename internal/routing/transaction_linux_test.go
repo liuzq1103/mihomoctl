@@ -17,6 +17,43 @@ func txBackups(t *testing.T, a platform.App) []string {
 	return backupsEntries(t, a.Scope)
 }
 
+// TestLinuxWithLockHookRecoversJournals proves the shared recovery wiring:
+// with the routing hook registered at init, a plain platform.WithLock —
+// no routing code in the critical section — replays an abandoned journal
+// before the mutation runs.
+func TestLinuxWithLockHookRecoversJournals(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("user-scope mutation gate refuses root")
+	}
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, target, "original", 0600)
+	tx, err := beginFileTransaction(scope, "test-hook", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("pending"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Crash: no commit, no rollback, no explicit recoverTransactions.
+
+	if err := platform.WithLock(context.Background(), scope, func() error { return nil }); err != nil {
+		t.Fatalf("WithLock hook recovery failed: %v", err)
+	}
+	if readTxFile(t, target) != "original" {
+		t.Fatal("hook recovery did not restore the pre-transaction content")
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 0 {
+		t.Fatalf("hook recovery retained journals: %v", entries)
+	}
+	if pending, err := pendingRoutingTransactions(scope); err != nil || pending {
+		t.Fatalf("pending after hook recovery = %v err = %v", pending, err)
+	}
+	if err := platform.CheckPending(scope); err != nil {
+		t.Fatalf("CheckPending after hook recovery: %v", err)
+	}
+}
+
 // TestLinuxApplyPolicyAfterWriteFailureRollsBackAllFiles is the fault
 // injection the durable-recovery requirement asks for: the configuration and
 // an afterWrite provider file are already published when the hook fails.

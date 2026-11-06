@@ -72,7 +72,9 @@ func CommitAndStart(ctx context.Context, a platform.App, configPath string, befo
 			if e := lifecycle(active, a, "start"); e != nil {
 				return e
 			}
-			if active.Err()!=nil{return active.Err()}
+			if active.Err() != nil {
+				return active.Err()
+			}
 			if x.Manager.Tun.Enabled {
 				if e := sealTunReceipt(active, a, x.Manager); e != nil {
 					return e

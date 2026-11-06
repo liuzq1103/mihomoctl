@@ -294,8 +294,11 @@ func newPrivilegedFixture(t *testing.T, coreSource string) *privilegedFixture {
 	if e != nil {
 		t.Fatal(e)
 	}
-	root := "/opt/mihomoctl-go-ci-" + token[:12]
-	if e = os.Mkdir(root, 0755); e != nil {
+	// Hosted images vary: /opt or /usr/local/lib may be group writable. Select
+	// a verified existing ancestor tree; never repair permissions on foreign
+	// directories just to make the test's executable appear trusted.
+	root, e := createTrustedCIFixtureRoot([]string{"/opt", "/usr/local/lib", "/usr/lib", "/etc", "/"}, token)
+	if e != nil {
 		t.Fatal(e)
 	}
 	f := &privilegedFixture{T: t, App: a, Root: root, Token: token, Core: filepath.Join(root, "mihomo"), Worker: filepath.Join(root, "runtime-worker")}
@@ -317,6 +320,52 @@ func newPrivilegedFixture(t *testing.T, coreSource string) *privilegedFixture {
 		t.Fatal("supplied executable is not a runnable Mihomo core", e)
 	}
 	return f
+}
+func trustedCIFixtureParent(parent string) error {
+	if !absolute(parent) {
+		return platform.Usage("ci-fixture-parent-untrusted")
+	}
+	if e := platform.CheckPath(parent); e != nil {
+		return e
+	}
+	for path := parent; ; path = filepath.Dir(path) {
+		st, e := os.Stat(path)
+		if e != nil {
+			return e
+		}
+		owner, ok := st.Sys().(*syscall.Stat_t)
+		if !ok || !st.IsDir() || owner.Uid != 0 || st.Mode().Perm()&0022 != 0 {
+			return platform.Usage("ci-fixture-parent-untrusted")
+		}
+		if filepath.Dir(path) == path {
+			break
+		}
+	}
+	return nil
+}
+func createTrustedCIFixtureRoot(parents []string, token string) (string, error) {
+	if len(token) != 64 || !digestPattern.MatchString(token) {
+		return "", platform.Usage("ci-fixture-token-invalid")
+	}
+	for _, parent := range parents {
+		if e := trustedCIFixtureParent(parent); e != nil {
+			continue
+		}
+		root := filepath.Join(parent, "mihomoctl-go-ci-"+token[:12])
+		if e := os.Mkdir(root, 0755); e != nil {
+			continue
+		}
+		if e := os.Chmod(root, 0755); e != nil {
+			_ = os.Remove(root)
+			return "", e
+		}
+		if e := trustedCIFixtureParent(root); e != nil {
+			_ = os.Remove(root)
+			continue
+		}
+		return root, nil
+	}
+	return "", platform.Usage("ci-fixture-trusted-parent-unavailable")
 }
 func (f *privilegedFixture) receiptPath() string {
 	return filepath.Join(f.App.Scope.ConfigRoot, "privileged-ci.json")
@@ -343,6 +392,10 @@ func copyCIExecutable(t *testing.T, source, target string) {
 	}
 	out, e := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0755)
 	if e != nil {
+		t.Fatal(e)
+	}
+	if e = out.Chmod(0755); e != nil {
+		out.Close()
 		t.Fatal(e)
 	}
 	count, e := io.Copy(out, io.LimitReader(input, executableLimit+1))

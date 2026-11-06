@@ -5,7 +5,12 @@ expected=${1:?expected Go architecture}
 [ "$(go env GOARCH)" = "$expected" ]
 case "$expected:$(uname -m)" in amd64:x86_64|arm64:aarch64) ;; *) echo 'architecture execution mismatch' >&2; exit 1;; esac
 go vet ./...
-go test -race -count=1 ./...
+if [ "$expected" = amd64 ]; then
+    go test -race -count=1 ./...
+else
+    echo 'arm64 QEMU: ThreadSanitizer VMA layout is unsupported; race testing is NOT executed here. amd64 CI supplies race coverage.' >&2
+    go test -count=1 ./...
+fi
 go build -o /tmp/mihomoctl-go-ci .
 go build -o /tmp/mihomoctl-go-delivery ./scripts/deliveryctl
 # Product dispatch is part of acceptance: this fails if the root is still only a TUI.

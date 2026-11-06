@@ -316,9 +316,10 @@ func lifecycle(ctx context.Context, a platform.App, action string) error {
 		cleanup()
 		return e
 	}
-	deadline := time.NewTimer(time.Duration(x.Profile.Health.Timeout) * time.Second)
+	startupTimeout := time.Duration(defaults(x.Profile).Health.Timeout) * time.Second
+	deadline := time.NewTimer(startupTimeout)
 	defer deadline.Stop()
-	startctx, cancel := context.WithTimeout(ctx, time.Duration(x.Profile.Health.Timeout)*time.Second)
+	startctx, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
 	for {
 		h, e := healthResolved(startctx, a, x, &current)

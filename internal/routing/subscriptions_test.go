@@ -2,7 +2,12 @@ package routing
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func validProviderPolicy() map[string]any {
@@ -196,5 +201,42 @@ func TestDownloadRejectsNonHTTPSAndCredentialURLs(t *testing.T) {
 	} {
 		_, err := download(context.Background(), url)
 		mustCode(t, err, "subscription-requires-https-url-without-userinfo")
+	}
+}
+
+// TestDownloadBodyStallIsBounded proves the whole-exchange deadline: a server
+// that flushes headers and then never sends a body byte must fail within the
+// download budget instead of pinning the reader inside a blocking read.
+func TestDownloadBodyStallIsBounded(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/yaml")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release // headers delivered, body never arrives
+	}))
+	defer server.Close()
+	defer close(release)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(server.Certificate())
+	savedDeadline, savedTLS := downloadDeadline, downloadTLSConfig
+	downloadDeadline, downloadTLSConfig = 500*time.Millisecond, &tls.Config{RootCAs: pool}
+	t.Cleanup(func() { downloadDeadline, downloadTLSConfig = savedDeadline, savedTLS })
+
+	begin := time.Now()
+	_, err := download(context.Background(), server.URL)
+	elapsed := time.Since(begin)
+	if err == nil {
+		t.Fatal("stalled body download unexpectedly succeeded")
+	}
+	mustCode(t, err, "subscription-download-timeout")
+	if elapsed > 5*time.Second {
+		t.Fatalf("stalled body download took %s; the hard deadline did not bound it", elapsed)
+	}
+	if elapsed < 400*time.Millisecond {
+		t.Fatalf("stalled body download failed after %s; the exchange was not actually attempted", elapsed)
 	}
 }

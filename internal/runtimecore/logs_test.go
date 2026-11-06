@@ -280,5 +280,69 @@ func TestJournalOwnershipFailureDoesNotReadBackend(t *testing.T) {
 		t.Fatal("queried journal after ownership failed")
 	}
 }
+func TestNewLogRedactorSnapshotsAllProfileCredentialsWithoutPerLineReads(t *testing.T) {
+	a, m, _ := secretLogFixture(t)
+	secondPath := filepath.Join(a.Scope.ConfigRoot, "credentials", "secondary.yaml")
+	if e := platform.WriteYAML(secondPath, credentials{"other-user", "secondary-private-password"}); e != nil {
+		t.Fatal(e)
+	}
+	m.Profiles["secondary"] = profile{HTTP: "proxy", SOCKS: "proxy", Credentials: secondPath}
+	if e := platform.WriteYAML(a.Scope.ManagerPath(), m); e != nil {
+		t.Fatal(e)
+	}
+	redact, e := NewLogRedactor(a)
+	if e != nil || redact == nil {
+		t.Fatal(e)
+	}
+	for _, p := range []string{a.Scope.ManagerPath(), m.Core.Config, m.Profiles["default"].Credentials, secondPath} {
+		if e = os.Remove(p); e != nil {
+			t.Fatal(e)
+		}
+	}
+	line := "controller=" + strings.Repeat("a", 64) + " password=unit-secret other=secondary-private-password https://userinfo-user:userinfo-password@host/?token=query-token\x1b"
+	const workers = 12
+	var wg sync.WaitGroup
+	failures := make(chan string, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out := redact(line)
+			if strings.Contains(out, "secondary-private-password") || strings.Contains(out, "unit-secret") || strings.Contains(out, "query-token") || strings.Contains(out, "userinfo-password") || strings.Contains(out, strings.Repeat("a", 64)) {
+				failures <- out
+			}
+		}()
+	}
+	wg.Wait()
+	close(failures)
+	for range failures {
+		t.Fatal("immutable shared redactor leaked cached secrets")
+	}
+}
+func TestNewLogRedactorFailsClosedOnMissingOrUnreadableInputs(t *testing.T) {
+	a := testApp(t)
+	redact, e := NewLogRedactor(a)
+	if e == nil || redact != nil {
+		t.Fatal("missing config produced an unsafe generic redactor")
+	}
+	a, m := fixture(t)
+	m.Profiles["broken"] = profile{HTTP: "proxy", Credentials: filepath.Join(a.Scope.ConfigRoot, "credentials", "missing.yaml")}
+	if e := platform.WriteYAML(a.Scope.ManagerPath(), m); e != nil {
+		t.Fatal(e)
+	}
+	redact, e = NewLogRedactor(a)
+	if e == nil || redact != nil {
+		t.Fatal("missing secondary credentials produced a redactor")
+	}
+	a, _ = fixture(t)
+	if e := platform.WriteJSON(compoundPath(a), map[string]any{"pending": true}); e != nil {
+		t.Fatal(e)
+	}
+	redact, e = NewLogRedactor(a)
+	requireCode(t, e, "transaction-recovery-required")
+	if redact != nil {
+		t.Fatal("pending transaction exposed a redactor")
+	}
+}
 
 var _ io.Writer = (*synchronizedLogWriter)(nil)

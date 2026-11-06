@@ -76,6 +76,9 @@ func Run(ctx context.Context, a platform.App, r platform.Request) (platform.Enve
 				}
 				return recoverInstall(a)
 			})
+			if e == nil {
+				data, e = installationStatus(a)
+			}
 		case "installation-uninstall":
 			data, e = Uninstall(ctx, a, r.Has("dry-run"))
 		case "release-check", "release-fetch":

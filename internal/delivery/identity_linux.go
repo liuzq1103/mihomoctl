@@ -13,6 +13,21 @@ import (
 	"github.com/liuzq1103/mihomoctl/internal/platform"
 )
 
+func removalIdentity(p string) (uint64, uint64, error) {
+	if e := platform.CheckPath(p); e != nil {
+		return 0, 0, e
+	}
+	st, e := os.Lstat(p)
+	if e != nil {
+		return 0, 0, e
+	}
+	s, ok := st.Sys().(*syscall.Stat_t)
+	if !ok || !st.IsDir() || int(s.Uid) != os.Geteuid() || st.Mode().Perm()&0077 != 0 {
+		return 0, 0, fail("uninstall-root-unowned")
+	}
+	return uint64(s.Dev), s.Ino, nil
+}
+
 func trustedVersionBinary(p string, system bool) error {
 	if !filepath.IsAbs(p) || filepath.Clean(p) != p {
 		return fail("core-path-untrusted")

@@ -64,6 +64,9 @@ func chownTree(root string, uid, gid int) error { return nil }
 // is no portable equivalent.
 func validationIdentity(cmd *execCmd, uid int) {}
 
+// validationResourceOwned has no portable ownership equivalent off Linux.
+func validationResourceOwned(st os.FileInfo, system bool) bool { return true }
+
 // fileOwnedPrivate has no portable ownership equivalent off Linux; the
 // regular-file check remains.
 func fileOwnedPrivate(info os.FileInfo) bool { return info.Mode().IsRegular() }

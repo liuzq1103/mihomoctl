@@ -42,7 +42,7 @@ func withLock(ctx context.Context, path string, fn func() error) error {
 	if e := CheckPath(path); e != nil {
 		return e
 	}
-	fd, e := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	fd, e := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
 	if e != nil {
 		return e
 	}

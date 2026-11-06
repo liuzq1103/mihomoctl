@@ -204,8 +204,10 @@ func healthResolved(ctx context.Context, a platform.App, x resolved, known *iden
 		return doc, nil
 	}
 	timeout := time.Duration(defaults(x.Profile).Health.Timeout) * time.Second
-	if timeout > 3*time.Second {
-		timeout = 3 * time.Second
+	// Match the original five-second read allowance. Real Mihomo may spend
+	// more than three seconds producing a local authenticated HEAD response.
+	if timeout > 5*time.Second {
+		timeout = 5 * time.Second
 	}
 	for _, ep := range x.Endpoints {
 		owned := ownsListener(*id, ep)

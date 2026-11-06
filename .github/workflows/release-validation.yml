@@ -56,7 +56,7 @@ jobs:
         if: matrix.arch == 'arm64'
         with:
           platforms: arm64
-      - name: Ubuntu arm64 gate (QEMU execution, including race tests)
+      - name: Ubuntu arm64 gate (QEMU regular tests and real core; race runs on amd64)
         if: matrix.arch == 'arm64'
         env:
           UBUNTU: ${{ matrix.os }}

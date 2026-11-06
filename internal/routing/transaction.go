@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -26,6 +27,16 @@ import (
 // that belongs to the runtime core.
 
 const txJournalLimit = 16 * 1024 * 1024
+
+// txIDPattern confines a transaction identifier to the exact shape
+// beginFileTransaction generates: a filename-safe label, a hyphen, and the
+// twelve lowercase hex characters of the random tail. A journal is untrusted
+// input: anything whose on-disk directory or recorded id deviates from this
+// shape is refused outright rather than replayed.
+var txIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}-[0-9a-f]{12}$`)
+
+// txNamePattern bounds the transaction label recorded inside a journal.
+var txNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // txRecord is one journaled operation. The journal is persisted BEFORE the
 // filesystem mutation, so a crash at any point leaves a recoverable plan.
@@ -90,6 +101,9 @@ func beginFileTransaction(scope platform.Scope, name string, system bool) (*file
 		return nil, control("controller-operation-unavailable", exitUnverify)
 	}
 	tx.id = name + "-" + hex.EncodeToString(id)
+	if !txIDPattern.MatchString(tx.id) {
+		return nil, control("transaction-journal-invalid", exitUnverify)
+	}
 	if err := platform.PrivateDir(tx.stagingRoot()); err != nil {
 		return nil, controllerFileError(err)
 	}
@@ -565,6 +579,9 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		if !txIDPattern.MatchString(name) {
+			return control("transaction-journal-invalid", exitUnverify)
+		}
 		directory := filepath.Join(root, name)
 		if err := platform.PrivateDir(directory); err != nil {
 			return control("transaction-recovery-required", exitUnverify)
@@ -594,6 +611,18 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 		if json.Unmarshal(raw, &document) != nil || document.ID != name || document.Journal == nil {
 			return control("transaction-journal-invalid", exitUnverify)
 		}
+		if !txIDPattern.MatchString(document.ID) || !txNamePattern.MatchString(document.Name) {
+			return control("transaction-journal-invalid", exitUnverify)
+		}
+		// The journal's staging field is untrusted: a forged journal must
+		// never steer cleanup at a directory it names itself. Only the one
+		// location beginFileTransaction can create — a direct child of the
+		// scope's staging root prefixed with the transaction id — is ever
+		// eligible for removal, and it must be a plain directory.
+		staging, err := txValidatedStaging(scope, document.Staging, document.ID)
+		if err != nil {
+			return err
+		}
 		switch document.State {
 		case "pending", "committed", "restored":
 		default:
@@ -601,7 +630,7 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 		}
 		tx := &fileTransaction{
 			scope: scope, system: system, id: document.ID, name: document.Name,
-			staging: document.Staging, backupRoot: directory,
+			staging: staging, backupRoot: directory,
 			journal: document.Journal, journalOnly: true,
 		}
 		for _, record := range tx.journal {
@@ -668,4 +697,33 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 		tx.cleanup()
 	}
 	return nil
+}
+
+// txValidatedStaging re-derives the only staging location recovery may touch:
+// a plain directory directly inside the scope's staging root whose name
+// starts with the transaction id. Anything else the journal claims — an
+// arbitrary path, an escaping prefix, a symlink — is refused before any
+// cleanup can run. A missing directory removes nothing and is accepted.
+func txValidatedStaging(scope platform.Scope, recorded, id string) (string, error) {
+	if recorded == "" {
+		return "", nil
+	}
+	cleaned := filepath.Clean(recorded)
+	base := filepath.Base(cleaned)
+	if filepath.Dir(cleaned) != filepath.Join(scope.StateRoot, "staging") ||
+		!strings.HasPrefix(base, id+"-") || len(base) <= len(id)+1 ||
+		!txNamePattern.MatchString(base) {
+		return "", control("transaction-journal-invalid", exitUnverify)
+	}
+	info, err := os.Lstat(cleaned)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", controllerFileError(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", control("transaction-journal-invalid", exitUnverify)
+	}
+	return cleaned, nil
 }

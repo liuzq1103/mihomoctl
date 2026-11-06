@@ -22,6 +22,45 @@ const maxRawLogLine = 1 << 20
 
 type logRedactor struct{ Protected []string }
 
+// NewLogRedactor snapshots the resolved configuration and every configured
+// profile's private credentials once. The returned immutable function performs
+// no filesystem, network, or configuration reads and is safe to share between
+// streaming goroutines. A caller must discard/drop logs when creation fails.
+func NewLogRedactor(a platform.App) (func(string) string, error) {
+	if e := platform.CheckPending(a.Scope); e != nil {
+		return nil, e
+	}
+	x, e := resolve(a, "")
+	if e != nil {
+		return nil, e
+	}
+	redactor, e := resolvedLogRedactor(x)
+	if e != nil {
+		return nil, e
+	}
+	if e = platform.CheckPending(a.Scope); e != nil {
+		return nil, e
+	}
+	return redactor.line, nil
+}
+func resolvedLogRedactor(x resolved) (logRedactor, error) {
+	cfg := map[string]any{"configuration": x.Config}
+	profiles := []any{}
+	for _, name := range sortedKeys(x.Manager.Profiles) {
+		p := x.Manager.Profiles[name]
+		if p.Credentials == "" {
+			continue
+		}
+		credentials, e := loadCredentials(p)
+		if e != nil {
+			return logRedactor{}, e
+		}
+		profiles = append(profiles, map[string]any{"password": credentials.Password})
+	}
+	cfg["profile_credentials"] = profiles
+	return makeLogRedactor(cfg), nil
+}
+
 func requestJSON(r platform.Request) bool { return r.JSON || r.Has("json") }
 func makeLogRedactor(cfg map[string]any) logRedactor {
 	values := map[string]bool{}
@@ -167,7 +206,10 @@ func logsWithBackend(ctx context.Context, a platform.App, r platform.Request, re
 	if e != nil {
 		return doc, e
 	}
-	redactor := makeLogRedactor(x.Config)
+	redactor, e := resolvedLogRedactor(x)
+	if e != nil {
+		return doc, e
+	}
 	if e = verify(ctx, a, x.Manager); e != nil {
 		return doc, e
 	}

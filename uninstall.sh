@@ -1,5 +1,5 @@
 #!/bin/sh
-# Removes only the receipt-owned launcher; data, generations and cores remain.
+# Removes receipt-owned program code and launcher; configuration and independent cores remain.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 helper="$root/bin/deliveryctl"

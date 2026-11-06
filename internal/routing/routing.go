@@ -106,6 +106,22 @@ func requiresMutation(command []string) bool {
 	return false
 }
 
+// recoverBeforeSnapshot runs the shared recovery hooks — routing journals at
+// order 10, the runtime journal after — before a mutating flow reads the
+// configuration for the first time. The lock is taken and released here, so
+// the flow's own later transaction locks stay sequential, never nested. A
+// snapshot taken before recovery would be stale the moment recovery restores
+// a crashed configuration, tripping the stale-before refusal on a perfectly
+// valid edit; the in-transaction rechecks are untouched and still refuse a
+// genuinely concurrent change. An already-cancelled request mutates nothing
+// and snapshots nothing, so it skips straight to its own cancelled error.
+func recoverBeforeSnapshot(ctx context.Context, scope platform.Scope) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	return platform.WithLock(ctx, scope, func() error { return nil })
+}
+
 // Run executes one bridged controller or rules command.
 func Run(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
 	command := r.Command
@@ -113,6 +129,12 @@ func Run(ctx context.Context, a platform.App, r platform.Request) (platform.Enve
 	name := command[0]
 	if requiresMutation(command) {
 		if err := a.Scope.RequireMutation(); err != nil {
+			return failureEnvelope(name, scope, err), nil
+		}
+		// Recover every module's journals before the first configuration
+		// read below: the snapshot must describe the recovered state, not
+		// the crashed candidate a journal is about to roll back.
+		if err := recoverBeforeSnapshot(ctx, a.Scope); err != nil {
 			return failureEnvelope(name, scope, err), nil
 		}
 	}

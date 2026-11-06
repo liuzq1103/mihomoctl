@@ -12,7 +12,7 @@ test -x "$testbin"
 for p in /etc/mihomoctl-go /var/lib/mihomoctl-go /var/cache/mihomoctl-go /run/mihomoctl-go /run/mihomoctl-go-core /etc/systemd/system/mihomoctl-go.service; do
     test ! -e "$p"
 done
-core_root=/usr/local/lib/mihomoctl-go-ci-core
+core_root=/root/mihomoctl-go-ci-core
 test ! -e "$core_root"
 install -d -o root -g root -m 0755 "$core_root"
 trap 'rm -f -- "$core_root/mihomo" "$core_root/core.gz" "$core_root/privileged.log"; rmdir -- "$core_root"' EXIT HUP INT TERM

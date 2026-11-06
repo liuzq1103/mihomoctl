@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -253,6 +255,15 @@ func providerPathHasParent(path string) bool {
 	return false
 }
 
+// downloadDeadline bounds the entire subscription exchange — connect,
+// headers and body — so a server that flushes headers and then stalls can
+// never pin the reader. It is a variable only so tests can shorten it.
+var downloadDeadline = 15 * time.Second
+
+// downloadTLSConfig is nil in production (default certificate verification);
+// tests pin a private CA to exercise the full verified-TLS path locally.
+var downloadTLSConfig *tls.Config
+
 // download fetches a subscription over verified TLS with a direct transport,
 // no redirects and no error-body disclosure.
 func download(ctx context.Context, url string) ([]byte, error) {
@@ -265,8 +276,14 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	if err != nil || parts.scheme != "https" || parts.hostname == "" || parts.hasUserinfo || parts.fragment {
 		return nil, control("subscription-requires-https-url-without-userinfo", exitFail)
 	}
+	// The context deadline covers the whole request plus body: the per-read
+	// loop below can block indefinitely inside the kernel, so only a hard
+	// deadline (context and client timeout together) bounds a stalled body.
+	dctx, cancel := context.WithTimeout(ctx, downloadDeadline)
+	defer cancel()
 	transport := &http.Transport{
 		Proxy:                 nil,
+		TLSClientConfig:       downloadTLSConfig,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
 		DisableKeepAlives:     true,
@@ -274,11 +291,12 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	}
 	client := &http.Client{
 		Transport: transport,
+		Timeout:   downloadDeadline,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	request, err := http.NewRequestWithContext(dctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, control("subscription-download-failed", exitFail)
 	}
@@ -287,6 +305,9 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, control("subscription-download-cancelled", exitUnverify)
+		}
+		if dctx.Err() != nil || isNetTimeout(err) {
+			return nil, control("subscription-download-timeout", exitFail)
 		}
 		return nil, control("subscription-download-failed", exitFail)
 	}
@@ -297,14 +318,13 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	if response.StatusCode != http.StatusOK {
 		return nil, control("subscription-download-rejected", exitFail)
 	}
-	deadline := time.Now().Add(15 * time.Second)
 	reader := bufio.NewReader(response.Body)
 	var chunks []byte
 	for len(chunks) <= limit {
 		if ctx.Err() != nil {
 			return nil, control("subscription-download-cancelled", exitUnverify)
 		}
-		if !time.Now().Before(deadline) {
+		if dctx.Err() != nil {
 			return nil, control("subscription-download-timeout", exitFail)
 		}
 		want := 65536
@@ -323,6 +343,9 @@ func download(ctx context.Context, url string) ([]byte, error) {
 			if ctx.Err() != nil {
 				return nil, control("subscription-download-cancelled", exitUnverify)
 			}
+			if dctx.Err() != nil || isNetTimeout(readErr) {
+				return nil, control("subscription-download-timeout", exitFail)
+			}
 			return nil, control("subscription-download-failed", exitFail)
 		}
 	}
@@ -330,6 +353,13 @@ func download(ctx context.Context, url string) ([]byte, error) {
 		return nil, control("subscription-size-invalid", exitFail)
 	}
 	return chunks, nil
+}
+
+// isNetTimeout reports whether the transport surfaced a timeout-class error
+// (the client hard deadline fires independently of the context).
+func isNetTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 type subscriptionURL struct {

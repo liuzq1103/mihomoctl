@@ -25,6 +25,16 @@ func Execute(ctx context.Context, system bool, r platform.Request) platform.Enve
 		return platform.Failure(name, scope, err)
 	}
 	a := platform.App{Scope: s}
+	if recoversOnMutation(r) {
+		if err := platform.WithLock(ctx, s, func() error { return nil }); err != nil {
+			return platform.Failure(name, scope, err)
+		}
+	}
+	if !recoversOnMutation(r) {
+		if err := platform.CheckPending(s); err != nil {
+			return platform.Failure(name, scope, err)
+		}
+	}
 	if len(r.Command) == 1 && r.Command[0] == "export" {
 		r.Command = []string{"integration", "export"}
 		r.Args = []string{r.Get("binding")}
@@ -53,4 +63,20 @@ func Execute(ctx context.Context, system bool, r platform.Request) platform.Enve
 		return platform.Failure(name, scope, platform.Usage("invalid-service-response"))
 	}
 	return env
+}
+
+func recoversOnMutation(r platform.Request) bool {
+	switch r.Name() {
+	case "init", "start", "stop", "restart", "profile-set-default", "core-adopt", "service-install", "service-start", "service-stop", "service-restart", "service-uninstall", "tun-enable", "tun-disable", "integration-install", "integration-remove", "controller-initialize", "controller-setup", "subscription-preview", "subscription-apply", "installation-install", "installation-uninstall", "installation-recover":
+		return true
+	case "reset", "migrate", "manual", "override", "health-check":
+		return r.Has("apply")
+	case "update", "core-install", "core-update":
+		return !r.Has("dry-run")
+	case "env-export":
+		return r.Get("output") != ""
+	case "integration-export", "export":
+		return r.Get("output-dir") != ""
+	}
+	return false
 }

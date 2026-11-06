@@ -36,7 +36,7 @@ func installed(t *testing.T) (platform.App, string) {
 	if e = platform.AtomicWrite(bin, launcher(root), 0700); e != nil {
 		t.Fatal(e)
 	}
-	if e = platform.WriteJSON(filepath.Join(root, "receipt.json"), Receipt{1, Project, bin, platform.Hash(launcher(root))}); e != nil {
+	if e = platform.WriteJSON(filepath.Join(root, "receipt.json"), Receipt{Format: 1, Project: Project, BinPath: bin, LauncherSHA256: platform.Hash(launcher(root))}); e != nil {
 		t.Fatal(e)
 	}
 	if e = platform.AtomicWrite(filepath.Join(root, "current"), []byte(id+"\n"), 0600); e != nil {
@@ -217,13 +217,17 @@ func TestLinuxBootstrapAndUninstall(t *testing.T) {
 		t.Fatal("reinstall after full uninstall failed", e)
 	}
 	config := filepath.Join(a.Scope.ConfigRoot, "manager.yaml")
-	if e := os.WriteFile(config, []byte("preserved"), 0600); e != nil {
+	if e := platform.WriteYAML(config, map[string]any{"core": map[string]any{"binary": filepath.Join(a.Scope.DataRoot, "cores", "preserved")}}); e != nil {
+		t.Fatal(e)
+	}
+	before, e := os.ReadFile(config)
+	if e != nil {
 		t.Fatal(e)
 	}
 	if _, e := Uninstall(context.Background(), a, false); e != nil {
 		t.Fatal(e)
 	}
-	if b, e := os.ReadFile(config); e != nil || string(b) != "preserved" {
+	if b, e := os.ReadFile(config); e != nil || string(b) != string(before) {
 		t.Fatal("uninstall changed configuration", string(b), e)
 	}
 }

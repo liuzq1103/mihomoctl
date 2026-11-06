@@ -299,17 +299,7 @@ func recordLaunch(a platform.App, m manager) (string, error) {
 	return token, nil
 }
 func pendingRecovery(a platform.App) error {
-	for _, p := range []string{journalPath(a), compoundPath(a)} {
-		if e := platform.CheckPath(p); e != nil {
-			return e
-		}
-		if _, e := os.Lstat(p); e == nil {
-			return platform.Usage("transaction-recovery-required")
-		} else if !os.IsNotExist(e) {
-			return e
-		}
-	}
-	return nil
+	return platform.CheckPending(a.Scope)
 }
 
 func applyCompound(ctx context.Context, a platform.App, operation string, before, next manager, files map[string][]byte, original *identity, activate func(context.Context) error) error {

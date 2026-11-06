@@ -48,7 +48,12 @@ without them must not claim dashboard/geodata availability. Any config requiring
 those resources still needs separately reviewed inputs. An offline bundle includes
 the native CLI, native installer/recovery helper, reviewed core and original pinned gzip (so binary/asset correspondence can be rechecked), license/provenance,
 install/uninstall scripts, and exact manifest. Installation does not initialize
-configuration or start services; its result gives the bundled core path for explicit init/adopt.
+configuration or start services. Its result labels the bundled core as program-owned.
+For an independent core that survives program uninstall, use
+`mihomoctl core install --version v1.19.33 --asset /BUNDLE/core/CANONICAL_ASSET.gz`,
+then explicitly init/adopt the returned path under managed `cores/` storage.
+Uninstall refuses a configured/adopted core inside program generations, preserves
+its executable and returns an actionable error; it never silently deletes that core.
 
 Check a bundle with `go run ./scripts/verifyrelease -archive BUNDLE -sha256 REVIEWED_HASH`.
 Use `-execute` only for explicitly reviewed native inputs; this verifies actual CLI
@@ -61,11 +66,25 @@ journal records the old/new manifest hashes. Before a switch, all payload bytes
 are staged, hashed, fsynced and inventoried; after an interrupted switch, recovery
 validates the selected generation and either finishes or restores the intact old
 generation. Ambiguous/corrupt journals are retained and refused. Previous generations
-are retained. No historical rollback/pruning is implemented here. Uninstall removes
-only the owned launcher, retaining data and generations deliberately.
+are retained until program uninstall. No historical rollback/pruning is implemented here.
+Uninstall removes the owned launcher, receipt, current pointer and all program
+generations. Configuration, runtime state and independent `cores/` storage remain.
+A private journal outside the program root binds the exact receipt SHA-256,
+current manifest identity, root inode/device, unique quarantine and complete file
+inventory. The verified program root is renamed atomically into that quarantine.
+Only captured unchanged files are removed; symlinks, special files, foreign changes
+and replacement installations fail closed. Recovery resumes partial deletion,
+and Bootstrap recovers or refuses an outstanding journal before installing new code.
+New installations receive unique receipt identities. Only true program-root absence
+with no pending journal is reported as `not-installed`; corruption and drift fail.
+Repeated uninstall succeeds without deleting configuration or cores, and subsequent
+installation works. A bundle's native helper can recover even after its launcher
+has been removed. Use an external copy of the bundle to reinstall/recover.
 
 CI runs race/vet/full-package tests and product CLI/bundle smoke on Ubuntu 22.04
-and 24.04, amd64 natively and arm64 via explicit QEMU Ubuntu containers. The draft
+and 24.04, amd64 natively and arm64 via explicit QEMU Ubuntu containers. Race tests
+run on amd64; arm64 QEMU runs normal tests and actual CLI/core execution. Its
+ThreadSanitizer VMA layout is unsupported, so no arm64 QEMU race PASS is claimed. The draft
 matrix also includes privileged real-systemd amd64 jobs on both Ubuntu versions;
 they fail if PID 1 is not systemd, or real core init/service/start/health cannot
 be verified. These are acceptance jobs, not local evidence of a systemd pass. The draft

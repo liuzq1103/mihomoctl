@@ -66,7 +66,10 @@ func journalWithBackend(ctx context.Context, a platform.App, since, until string
 	if e != nil {
 		return fail(e)
 	}
-	redactor := makeLogRedactor(x.Config)
+	redactor, e := resolvedLogRedactor(x)
+	if e != nil {
+		return fail(e)
+	}
 	if e = verify(ctx, a, x.Manager); e != nil {
 		return fail(e)
 	}

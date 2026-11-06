@@ -90,6 +90,52 @@ func legacyOf(t *testing.T, envelope platform.Envelope) map[string]any {
 	return legacy
 }
 
+// TestLinuxExportRecoversBeforeSnapshot pins the recover-before-snapshot
+// contract of the shared recovery protocol: an exported mutation entry must
+// replay abandoned journals BEFORE its first configuration read, so the
+// guided decision describes the recovered state, not the crashed candidate a
+// pending journal is about to roll back. Without this ordering the snapshot
+// is stale the moment recovery restores the file, and a later stale-before
+// recheck refuses a perfectly valid edit of the recovered state.
+func TestLinuxExportRecoversBeforeSnapshot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("user-scope mutation gate refuses root")
+	}
+	a, configPath := subscriptionScope(t, linuxFreshConfig, "/usr/bin/true")
+	// Crash mid-transaction: the routed candidate was published over the
+	// fresh configuration and its journal is still pending.
+	tx, err := beginFileTransaction(a.Scope, "test-stale", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(configPath, []byte(linuxRoutedConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if current := readTxFile(t, configPath); current != linuxRoutedConfig {
+		t.Fatalf("crash staging failed: %q", current)
+	}
+
+	envelope, err := SubscriptionInput(context.Background(), a, writeSubscriptionFile(t, linuxNodeSubscription), "file", "simple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Overall != "PASS" {
+		t.Fatalf("subscription input = %s %v", envelope.Overall, envelope.Errors)
+	}
+	legacy := legacyOf(t, envelope)
+	if legacy["guided"] != true {
+		t.Fatalf("guided decision taken on a stale snapshot: guided = %v", legacy["guided"])
+	}
+	// Recovery genuinely ran before the snapshot: the crashed publication
+	// is rolled back to the fresh configuration.
+	if current := readTxFile(t, configPath); current != linuxFreshConfig {
+		t.Fatalf("configuration not recovered before the snapshot:\n%s", current)
+	}
+	if entries := backupsEntries(t, a.Scope); len(entries) != 0 {
+		t.Fatalf("recovery retained journals: %v", entries)
+	}
+}
+
 func TestLinuxGuidedSubscriptionInputAndApply(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("user-scope mutation gate refuses root")

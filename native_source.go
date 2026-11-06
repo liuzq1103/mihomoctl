@@ -13,6 +13,7 @@ import (
 	"github.com/liuzq1103/mihomoctl/internal/delivery"
 	"github.com/liuzq1103/mihomoctl/internal/platform"
 	"github.com/liuzq1103/mihomoctl/internal/routing"
+	"github.com/liuzq1103/mihomoctl/internal/runtimecore"
 )
 
 // nativeSource resolves the owned configuration again after initialization or
@@ -30,6 +31,9 @@ type nativeSource struct {
 func (s *nativeSource) current() (Source, error) {
 	scope, e := platform.NewScope(s.system)
 	if e != nil {
+		return nil, e
+	}
+	if e = platform.CheckPending(scope); e != nil {
 		return nil, e
 	}
 	p := s.explicit
@@ -120,11 +124,46 @@ func (s *nativeSource) StartLogs(ctx context.Context) (<-chan LogLine, error) {
 	return s.StartLogsAt(ctx, "info")
 }
 func (s *nativeSource) StartLogsAt(ctx context.Context, l string) (<-chan LogLine, error) {
-	api := s.source()
-	if v, ok := api.(LogLevelSource); ok {
-		return v.StartLogsAt(ctx, l)
+	scope, e := platform.NewScope(s.system)
+	if e != nil {
+		return nil, e
 	}
-	return api.StartLogs(ctx)
+	redact, e := runtimecore.NewLogRedactor(platform.App{Scope: scope})
+	if e != nil {
+		return nil, e
+	}
+	api := s.source()
+	var input <-chan LogLine
+	if v, ok := api.(LogLevelSource); ok {
+		input, e = v.StartLogsAt(ctx, l)
+	} else {
+		input, e = api.StartLogs(ctx)
+	}
+	if e != nil {
+		return nil, e
+	}
+	out := make(chan LogLine, 128)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case line, ok := <-input:
+				if !ok {
+					return
+				}
+				line.Payload = redact(line.Payload)
+				line.Type = redact(line.Type)
+				select {
+				case out <- line:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out, nil
 }
 
 // prepareConsole follows the upstream first-use behavior. It never imports a

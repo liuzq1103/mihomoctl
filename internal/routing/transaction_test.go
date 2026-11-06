@@ -332,3 +332,178 @@ func TestTransactionRecoversEmptyJournal(t *testing.T) {
 		t.Fatalf("empty journal retained: %v", entries)
 	}
 }
+
+// forgeJournal writes a journal document by hand under the backups root,
+// simulating an attacker- or corruption-controlled recovery input.
+func forgeJournal(t *testing.T, scope platform.Scope, directory, id, name, state, staging string) {
+	t.Helper()
+	root := filepath.Join(scope.StateRoot, "backups", directory)
+	if err := platform.PrivateDir(root); err != nil {
+		t.Fatal(err)
+	}
+	document := map[string]any{
+		"id": id, "name": name, "state": state,
+		"staging": staging, "journal": []map[string]any{},
+	}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := platform.AtomicWrite(filepath.Join(root, "journal.json"), append(raw, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRecoveryRefusesForgedJournalPaths pins the forged-journal threat: the
+// journal's staging field and identifiers are untrusted input, and recovery
+// must never delete anything outside the exact location beginFileTransaction
+// can create — regardless of what the document claims.
+func TestRecoveryRefusesForgedJournalPaths(t *testing.T) {
+	canary := func(t *testing.T, scope platform.Scope) string {
+		t.Helper()
+		dir := filepath.Join(filepath.Dir(scope.StateRoot), "canary-"+filepath.Base(scope.StateRoot))
+		if err := platform.PrivateDir(dir); err != nil {
+			t.Fatal(err)
+		}
+		writeTxFile(t, filepath.Join(dir, "keep.txt"), "precious", 0600)
+		return dir
+	}
+	cases := []struct {
+		label     string
+		directory string
+		id        string
+		canary    bool
+		staging   func(t *testing.T, scope platform.Scope) string
+	}{
+		{
+			label:     "arbitrary staging outside the state root",
+			directory: "forged-abcdef012345",
+			id:        "forged-abcdef012345",
+			canary:    true,
+			staging:   func(t *testing.T, scope platform.Scope) string { return canary(t, scope) },
+		},
+		{
+			label:     "staging inside the state root but outside the staging root",
+			directory: "forged-bcdef0123456",
+			id:        "forged-bcdef0123456",
+			staging: func(t *testing.T, scope platform.Scope) string {
+				return filepath.Join(scope.DataRoot, "forged-bcdef0123456-x")
+			},
+		},
+		{
+			label:     "staging in the staging root with a foreign prefix",
+			directory: "forged-cdef01234567",
+			id:        "forged-cdef01234567",
+			staging: func(t *testing.T, scope platform.Scope) string {
+				return filepath.Join(scope.StateRoot, "staging", "other-label-1")
+			},
+		},
+		{
+			label:     "identifier shape violation",
+			directory: "forged-CDEF01234567",
+			id:        "forged-CDEF01234567",
+			staging:   func(t *testing.T, scope platform.Scope) string { return "" },
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.label, func(t *testing.T) {
+			scope := txScope(t)
+			outside := testCase.staging(t, scope)
+			forgeJournal(t, scope, testCase.directory, testCase.id, "forged", "committed", outside)
+			err := recoverTransactions(scope, false)
+			mustCode(t, err, "transaction-journal-invalid")
+			if testCase.canary {
+				if _, statErr := os.Lstat(filepath.Join(outside, "keep.txt")); statErr != nil {
+					t.Fatalf("canary touched by refused journal: %v", statErr)
+				}
+			}
+			// The refused journal is retained for inspection, never cleaned.
+			if _, statErr := os.Lstat(filepath.Join(scope.StateRoot, "backups", testCase.directory, "journal.json")); statErr != nil {
+				t.Fatalf("refused journal removed: %v", statErr)
+			}
+		})
+	}
+	// A symlink planted at the expected staging location must also be
+	// refused, with the link target untouched.
+	t.Run("symlinked staging directory", func(t *testing.T) {
+		scope := txScope(t)
+		victim := canary(t, scope)
+		stagingRoot := filepath.Join(scope.StateRoot, "staging")
+		if err := platform.PrivateDir(stagingRoot); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(stagingRoot, "forged-def012345678-1")
+		if err := os.Symlink(victim, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		forgeJournal(t, scope, "forged-def012345678", "forged-def012345678", "forged", "committed", link)
+		err := recoverTransactions(scope, false)
+		mustCode(t, err, "transaction-journal-invalid")
+		if _, statErr := os.Lstat(filepath.Join(victim, "keep.txt")); statErr != nil {
+			t.Fatalf("symlink target touched: %v", statErr)
+		}
+	})
+}
+
+// TestCheckPendingPredicate covers the read-only predicate behind
+// platform.CheckPending: completed transactions leave nothing pending, a
+// crashed pending journal surfaces as transaction-recovery-required, and the
+// predicate neither recovers nor mutates anything by itself.
+func TestCheckPendingPredicate(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, target, "original", 0600)
+
+	// A completed transaction leaves nothing pending behind.
+	tx, err := beginFileTransaction(scope, "test-hook", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("committed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.commit(); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := pendingRoutingTransactions(scope); err != nil || pending {
+		t.Fatalf("pending after commit = %v err = %v", pending, err)
+	}
+	if err := platform.CheckPending(scope); err != nil {
+		t.Fatalf("CheckPending after commit: %v", err)
+	}
+
+	// Crash with a pending journal: the published file is uncommitted state.
+	tx, err = beginFileTransaction(scope, "test-hook", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("pending"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := pendingRoutingTransactions(scope); err != nil || !pending {
+		t.Fatalf("pending after crash = %v err = %v", pending, err)
+	}
+	if err := platform.CheckPending(scope); err == nil || platform.SafeError(err) != "transaction-recovery-required" {
+		t.Fatalf("CheckPending after crash = %v", err)
+	}
+	// The predicate is read-only: the journal and the uncommitted state are
+	// still exactly as the crash left them.
+	if readTxFile(t, target) != "pending" {
+		t.Fatal("pending predicate mutated the uncommitted state")
+	}
+
+	// Explicit recovery clears the pending state for the next reader: the
+	// last committed content ("committed") comes back.
+	if err := recoverTransactions(scope, false); err != nil {
+		t.Fatal(err)
+	}
+	if readTxFile(t, target) != "committed" {
+		t.Fatal("recovery did not restore the pre-transaction content")
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 0 {
+		t.Fatalf("recovery retained journals: %v", entries)
+	}
+	if err := platform.CheckPending(scope); err != nil {
+		t.Fatalf("CheckPending after recovery: %v", err)
+	}
+}

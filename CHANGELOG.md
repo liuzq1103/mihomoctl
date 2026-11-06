@@ -2,6 +2,13 @@
 
 ## 0.2.0 — unreleased
 
+- Full program uninstall now quarantines the receipt-bound installation atomically,
+  journals exact file ownership outside the program root, and resumes interrupted
+  deletion without touching replacement installations. It is idempotent and permits
+  reinstall. Corrupt status fails; only true absence reports not-installed.
+  Configuration and independent cores remain; uninstall refuses configured cores
+  located inside program generations.
+
 - Independent native Go project `mihomoctl-go`, repository `liuzq1103/mihomoctl`, command `mihomoctl`.
 - Bounded official-host release downloads with explicit caller-reviewed SHA-256 for acquisition and latest updates. Remote unsigned checksums are consistency evidence, not independent trust.
 - Managed installation receipt, exact manifest inventories, immutable generations, atomic activation record, failure rollback and recovery journal. Updates preserve runtime configuration and active core paths.

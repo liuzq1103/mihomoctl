@@ -199,7 +199,6 @@ func TestLinuxSaveAndStartRealCore(t *testing.T) {
 	controllerPort := freeLoopbackPort(t)
 	listenerPort := freeLoopbackPort(t)
 	a, configPath := activationScope(t, controllerPort, listenerPort, binary)
-	original := activationOriginal(t, configPath)
 
 	// Never leave a started core behind, whatever the test does next.
 	stopCore := func() {
@@ -233,40 +232,14 @@ func TestLinuxSaveAndStartRealCore(t *testing.T) {
 		t.Fatalf("SubscriptionSaveAndStart error: %v", err)
 	}
 	if saved.Overall != "PASS" {
-		// The activation gate can flake against a real core: the health
-		// probe's HEAD to 127.0.0.1:9 is routed through the candidate's
-		// proxy group, and mihomo retries the dead upstream instead of
-		// answering, so the probe times out (auth-http check) for the whole
-		// window. That is a runtimecore/real-mihomo interaction, not a
-		// routing failure. What this package guarantees still holds and is
-		// asserted here: the boundary restored everything and the plan is
-		// retained for a retry.
+		// With MIHOMOCTL_GO_TEST_CORE set this is a real verdict, not a
+		// skip: the coordinator's health-probe fix (Proxy-Connection:
+		// close) removed the last known environment flake, so a failure
+		// here is a routing or runtime regression and must fail the run.
 		for _, failure := range saved.Errors {
-			t.Logf("activation gate: %+v", failure)
+			t.Logf("activation error: %+v", failure)
 		}
-		if raw := activationOriginal(t, configPath); raw != original {
-			t.Fatal("failed activation did not restore the original configuration")
-		}
-		if _, err := os.Lstat(receiptPath(configPath)); !os.IsNotExist(err) {
-			t.Fatal("restart receipt survived a failed activation")
-		}
-		if _, err := os.Lstat(filepath.Join(a.Scope.StateRoot, "compound.json")); err == nil {
-			t.Fatal("compound journal retained after completed rollback")
-		}
-		if _, err := os.Lstat(a.Scope.RuntimeState()); err == nil {
-			t.Fatal("runtime state retained after completed rollback")
-		}
-		kept := false
-		for _, name := range stagedFiles(t, a) {
-			if strings.HasPrefix(name, identifier+".") {
-				kept = true
-			}
-		}
-		if !kept {
-			t.Fatalf("staged plan dropped after failed activation: %v", stagedFiles(t, a))
-		}
-		stopCore()
-		t.Skipf("activation gate flaked against the real core (%v); durable invariants verified, success path not exercised this run", saved.Errors)
+		t.Fatalf("save-and-start against the real core did not verify: %+v", saved.Errors)
 	}
 	activated := legacyOf(t, saved)
 	if activated["state"] != "ready" || activated["activation_state"] != "verified" ||

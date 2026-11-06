@@ -452,7 +452,12 @@ func WithLock(ctx context.Context, s Scope, fn func() error) error {
 	if e := PrivateDir(s.RuntimeRoot); e != nil {
 		return e
 	}
-	return withLock(ctx, filepath.Join(s.RuntimeRoot, "manager.lock"), fn)
+	return withLock(ctx, filepath.Join(s.RuntimeRoot, "manager.lock"), func() error {
+		if e := recoverAll(ctx, s); e != nil {
+			return e
+		}
+		return fn()
+	})
 }
 func ReadLimited(r io.Reader) ([]byte, error) {
 	if r == nil {

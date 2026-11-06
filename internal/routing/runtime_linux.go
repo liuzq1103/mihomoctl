@@ -384,6 +384,21 @@ func validationIdentity(cmd *execCmd, uid int) {
 	}
 }
 
+// validationResourceOwned enforces the ownership contract for resources
+// staged into the isolated validation tree: the acting account owns the file
+// with no group/other access, or — system scope only — root owns it without
+// group/other write, mirroring the trusted-executable ancestry rule.
+func validationResourceOwned(st os.FileInfo, system bool) bool {
+	s, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	if int(s.Uid) == os.Geteuid() {
+		return st.Mode().Perm()&0077 == 0
+	}
+	return system && int(s.Uid) == 0 && st.Mode().Perm()&0022 == 0
+}
+
 // fileOwnedPrivate reports whether a staged file belongs to the acting account
 // with no group/other access bits.
 func fileOwnedPrivate(info os.FileInfo) bool {
