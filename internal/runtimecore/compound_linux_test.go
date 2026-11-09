@@ -258,6 +258,35 @@ func TestRecoveryCanItselfBeInterruptedRepeatedly(t *testing.T) {
 		})
 	}
 }
+// The compound journal binds the objects it published. A replacement file
+// that carries identical bytes is a different object, so the recovery refuses
+// it instead of undoing it as if it were the operation's own file.
+func TestCompoundRecoveryRefusesSameByteForeignReplacement(t *testing.T) {
+	a := initializedApp(t)
+	if _, e := Run(context.Background(), a, platform.Request{Command: []string{"start"}}); e != nil {
+		t.Fatal(e)
+	}
+	candidate := replacementCore(t, a)
+	crashAt(t, crashSpec{App: a, Request: platform.Request{Command: []string{"core", "adopt"}, Options: map[string][]string{"path": {candidate}}}, Phase: "files-published"})
+	managed := a.Scope.ManagerPath()
+	raw, e := platform.ReadPrivate(managed)
+	if e != nil {
+		t.Fatal(e)
+	}
+	foreign := managed + ".foreign"
+	if e = platform.AtomicWrite(foreign, raw, 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Rename(foreign, managed); e != nil {
+		t.Fatal(e)
+	}
+	_, e = Run(context.Background(), a, platform.Request{Command: []string{"start"}})
+	requireCode(t, e, "compound-file-conflict")
+	if _, e = os.Stat(compoundPath(a)); e != nil {
+		t.Fatal("the recovery record was discarded", e)
+	}
+}
+
 func TestRecoveryRefusesForeignChangesAndPreservesJournal(t *testing.T) {
 	a := initializedApp(t)
 	if _, e := Run(context.Background(), a, platform.Request{Command: []string{"start"}}); e != nil {

@@ -290,6 +290,50 @@ func TestBootstrapAbandonsPublicationWhoseObjectsAreGone(t *testing.T) {
 	})
 }
 
+// A launcher that was staged for publication but removed before it could be
+// linked leaves a publication that can never complete: the receipt binds the
+// exact launcher object, and that object was released with the staging
+// directory. Recovery must roll the publication back instead of retaining a
+// half-installed program that no command can roll back or clear.
+func TestBootstrapRollsBackWhenTheStagedLauncherIsGone(t *testing.T) {
+	for _, phase := range []string{"journal-published", "root-published"} {
+		t.Run(phase, func(t *testing.T) {
+			a, source, bin := crashBootstrap(t, phase)
+			j, e := loadBootstrap(a)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = os.RemoveAll(j.LauncherDir); e != nil {
+				t.Fatal(e)
+			}
+			if e = recoverBootstrap(a); e == nil {
+				t.Fatal("recovery accepted a publication with no launcher")
+			}
+			// The scope has to be usable again: nothing of the abandoned
+			// publication may survive, not even the published root.
+			if exists, e := optionalExists(bootstrapJournalPath(a)); e != nil || exists {
+				t.Fatal("journal retained", e)
+			}
+			if exists, e := optionalExists(j.Root); e != nil || exists {
+				t.Fatal("published root retained", e)
+			}
+			if exists, e := optionalExists(j.Stage); e != nil || exists {
+				t.Fatal("staged tree retained", e)
+			}
+			// A fresh installation has to succeed on the recovered scope.
+			publicInstallation(t, a, "install", source, bin)
+			if _, e := readReceipt(a); e != nil {
+				t.Fatal(e)
+			}
+			publicInstallation(t, a, "uninstall", source, bin)
+			publicInstallation(t, a, "install", source, bin)
+			if _, e := readReceipt(a); e != nil {
+				t.Fatal(e)
+			}
+		})
+	}
+}
+
 // A publication that can never succeed on this kernel or filesystem must be
 // rolled back; a foreign destination is a conflict, not an unsupported system.
 func TestPublishRollbackDetectsUnsupportedSystem(t *testing.T) {

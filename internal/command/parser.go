@@ -39,6 +39,22 @@ type Spec struct {
 	Description string      `json:"description"`
 }
 
+// negativeNumber matches the tokens that argparse accepts as a value even
+// though they start with a prefix character.
+var negativeNumber = regexp.MustCompile(`^-\d+$|^-\d*\.\d+$`)
+
+// optionLookingToken reports whether a token is an option rather than a
+// value. The reference implementation refuses to consume it as the value of
+// the option before it, so "mihomoctl install --source --bogus" is a usage
+// error there and must not install the bundle directory named "--bogus"
+// here. A lone "-" and a negative number are values.
+func optionLookingToken(v string) bool {
+	if !strings.HasPrefix(v, "-") || v == "-" {
+		return false
+	}
+	return !negativeNumber.MatchString(v)
+}
+
 func Specs() []Spec {
 	var specs []Spec
 	if e := json.Unmarshal(specification, &specs); e != nil {
@@ -202,6 +218,9 @@ func Parse(argv []string, input io.Reader, output, stderr io.Writer) (Parsed, er
 					return p, invalidValue(selected)
 				}
 				v = args[i]
+				if optionLookingToken(v) {
+					return p, invalidValue(selected)
+				}
 			}
 			if e := validate(o, v); e != nil {
 				return p, invalidValue(selected)

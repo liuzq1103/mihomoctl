@@ -167,6 +167,45 @@ func TestScopeFlagsMatchTheBaselineExtraction(t *testing.T) {
 	}
 }
 
+// TestOptionValuesRefuseOptionLookingTokens pins the reference contract for
+// option values. argparse never consumes an option-looking token as the value
+// of the option before it — it reports "expected one argument" and the
+// envelope reports invalid arguments — so "mihomoctl installation install
+// --source --bogus" is refused there. The Go parser has to refuse it too, or
+// a bundle directory named "--bogus" would be installed instead of reported.
+func TestOptionValuesRefuseOptionLookingTokens(t *testing.T) {
+	for _, args := range [][]string{
+		{"installation", "install", "--source", "--bogus"},
+		{"installation", "install", "--source", "--json"},
+		{"installation", "install", "--bin-dir", "-x"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			p, err := Parse(args, nil, nil, nil)
+			if err == nil {
+				t.Fatalf("accepted %v", args)
+			}
+			env := platform.Failure(p.Request.TopLevel(), "user", err)
+			if env.Errors[0].Code != "usage-error" {
+				t.Fatalf("code = %q", env.Errors[0].Code)
+			}
+			if !strings.Contains(env.Errors[0].Detail, "invalid arguments for mihomoctl") {
+				t.Fatalf("detail = %q", env.Errors[0].Detail)
+			}
+		})
+	}
+	// A negative number, a lone "-" and the inline form are values in the
+	// reference implementation and stay values here.
+	for _, args := range [][]string{
+		{"installation", "install", "--source", "-1"},
+		{"installation", "install", "--source", "-"},
+		{"installation", "install", "--source=--bogus"},
+	} {
+		if _, err := Parse(args, nil, nil, nil); err != nil {
+			t.Fatalf("refused %v: %v", args, err)
+		}
+	}
+}
+
 func TestInvalidPinnedCoreVersionIsAParserRefusal(t *testing.T) {
 	for _, verb := range []string{"install", "update"} {
 		p, err := Parse([]string{"core", verb, "--version", "untrusted-version", "--dry-run"}, nil, nil, nil)

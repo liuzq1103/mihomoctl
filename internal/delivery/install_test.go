@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,60 @@ import (
 
 	"github.com/liuzq1103/mihomoctl/internal/platform"
 )
+
+// legacyReceipt rewrites the receipt of an installation exactly as the
+// release that predates the launcher object binding wrote it: the launcher
+// object is not named, because that release did not bind it.
+func legacyReceipt(t *testing.T, a platform.App) {
+	t.Helper()
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	legacy := map[string]any{
+		"format":          1,
+		"project":         Project,
+		"bin_path":        rec.BinPath,
+		"launcher_sha256": rec.LauncherSHA256,
+	}
+	if rec.InstallationID != "" {
+		legacy["installation_id"] = rec.InstallationID
+	}
+	b, e := json.Marshal(legacy)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = platform.AtomicWrite(filepath.Join(installRoot(a), "receipt.json"), b, 0600); e != nil {
+		t.Fatal(e)
+	}
+}
+
+// TestLegacyReceiptWithoutLauncherBindingIsStillUsable pins the
+// compatibility of the launcher object binding. A receipt written before the
+// binding existed names no object, and the published launcher was unlinked
+// from its staging path after the publication, so that object cannot be
+// recovered afterwards and there is nothing to compare against. Such an
+// installation keeps the guarantee it was written with — the launcher is
+// verified by content — and the commands that used it are not refused.
+func TestLegacyReceiptWithoutLauncherBindingIsStillUsable(t *testing.T) {
+	a, _ := installed(t)
+	legacyReceipt(t, a)
+	if _, e := readReceipt(a); e != nil {
+		t.Fatalf("a receipt without a launcher binding was refused: %v", e)
+	}
+	if runtime.GOOS != "linux" {
+		// The status report validates the retained program tree by device and
+		// inode, which is a Linux-only check.
+		return
+	}
+	status, e := installationStatus(a)
+	if e != nil {
+		t.Fatalf("status refused a receipt without a launcher binding: %v", e)
+	}
+	if ok, _ := status["installed"].(bool); !ok {
+		t.Fatalf("status = %v", status)
+	}
+}
 
 func testApp(t *testing.T) platform.App {
 	t.Helper()

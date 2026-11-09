@@ -119,6 +119,18 @@ interrupted publication is private and is never adopted and never guessed away,
 so it is safe to delete once no installation is pending. Removing the journal
 discards an unfinished publication; it does not delete an installed program.
 
+A removal journal written before the removal protocol bound the inventory is
+refused rather than guessed at: it is read back with `uninstall-legacy-journal`,
+and because recovery is what reads it, that state blocks every later mutation
+and `installation recover` until an operator removes it. Such a journal lives at
+`<state-root>/delivery-uninstall.json`, and the program state the old protocol
+staged lives under `<data-root>/.install-uninstall-partial`. Remove the journal
+file and that directory, then install again. The old protocol copied the program
+root into the staging directory before it deleted anything, so an installation
+whose root was already partly removed has to be removed by hand as well; the
+staged copy is private program state and is safe to delete once no removal is
+pending.
+
 A publication whose objects are gone is rolled back instead of refused. When the
 staged tree and the install root are both absent, recovery removes the launcher
 that this journal still owns, discards the journal and leaves the scope usable
@@ -127,6 +139,15 @@ kernel or the filesystem cannot publish the install root atomically at all, the
 staged tree and the journal are rolled back and the installation reports
 `bootstrap-publish-unsupported`; no public path is changed and the attempt can
 be repeated on a supported filesystem.
+
+A publication whose staged launcher is gone before the launcher could be linked
+can never be completed: the receipt binds the exact launcher object, and that
+object was released together with the staging directory, so a replacement
+carrying identical bytes would be a different object and would break the
+binding. Recovery rolls that publication back instead of refusing every later
+command: it removes the published install root, the staged launcher and the
+journal, and reports `bootstrap-launcher-source-missing`. The installation has
+to be run again; nothing outside the journal's own objects is touched.
 
 CI runs race/vet/full-package tests and product CLI/bundle smoke on Ubuntu 22.04
 and 24.04, both architectures on native hardware (the arm64 gate uses GitHub's

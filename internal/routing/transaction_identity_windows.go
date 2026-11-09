@@ -2,24 +2,9 @@
 
 package routing
 
-import (
-	"fmt"
-	"os"
-	"syscall"
-)
+import "github.com/liuzq1103/mihomoctl/internal/platform"
 
 // txObjectIdentity returns the identity of the filesystem object at path.
-// Windows exposes it as the volume serial number together with the file
-// index; the handle is opened read-only and never written.
-func txObjectIdentity(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	var info syscall.ByHandleFileInformation
-	if err := syscall.GetFileInformationByHandle(syscall.Handle(file.Fd()), &info); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%d:%d:%d", uint32(info.VolumeSerialNumber), info.FileIndexHigh, info.FileIndexLow), nil
-}
+// The shared helper keeps one definition of the object identity for every
+// journal that binds an object.
+func txObjectIdentity(path string) (string, error) { return platform.ObjectIdentity(path) }

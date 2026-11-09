@@ -41,13 +41,19 @@ var txNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 // txRecord is one journaled operation. The journal is persisted BEFORE the
 // filesystem mutation, so a crash at any point leaves a recoverable plan.
 type txRecord struct {
-	Op              string   `json:"op"` // publish | delete
-	Path            string   `json:"path"`
-	Type            string   `json:"type"` // file | dir | symlink
-	Mode            string   `json:"mode"` // octal permission string
-	UID             int      `json:"uid"`
-	GID             int      `json:"gid"`
-	Backup          string   `json:"backup,omitempty"`
+	Op     string `json:"op"` // publish | delete
+	Path   string `json:"path"`
+	Type   string `json:"type"` // file | dir | symlink
+	Mode   string `json:"mode"` // octal permission string
+	UID    int    `json:"uid"`
+	GID    int    `json:"gid"`
+	Backup string `json:"backup,omitempty"`
+	// BackupSHA256 is the content this transaction wrote into the backup
+	// file. The recovery compares the file at the path against the recorded
+	// content, not against whatever the backup file happens to contain when
+	// the recovery runs: a replaced backup must never decide what the
+	// rollback writes over the user's configuration.
+	BackupSHA256    string   `json:"backup_sha256,omitempty"`
 	Existed         bool     `json:"existed,omitempty"`
 	Created         bool     `json:"created,omitempty"`
 	CreatedDirs     []string `json:"created_dirs,omitempty"`
@@ -266,6 +272,7 @@ func (t *fileTransaction) backup(path string, record *txRecord) (string, error) 
 	if err := platform.AtomicWrite(saved, data, 0600); err != nil {
 		return "", controllerFileError(err)
 	}
+	record.BackupSHA256 = hashSHA256(data)
 	return saved, nil
 }
 
@@ -540,9 +547,29 @@ func (t *fileTransaction) restoreRecord(record *txRecord) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	// A rollback publishes a NEW object and journals its identity before the
+	// rename. If that object is the one standing at the destination, the
+	// restore already ran: restoring again would publish a second object and
+	// overwrite the only record of the first one, so the recovery would no
+	// longer recognize the object it finds there and would refuse its own
+	// interrupted rollback forever. A restore is therefore idempotent. The
+	// check comes before the backup is read: a restore that already ran does
+	// not depend on what the backup file contains now.
+	if record.RestoredObject != "" {
+		if object, ierr := txObjectIdentity(path); ierr == nil && object == record.RestoredObject {
+			return txRestoreOwnershipVerified(path, record.UID, record.GID)
+		}
+	}
 	data, err := os.ReadFile(record.Backup)
 	if err != nil {
 		return err
+	}
+	// The backup file is the source of the bytes this rollback publishes. The
+	// journal recorded the content it wrote there, so a backup that was
+	// replaced after the crash is refused instead of being published over
+	// the user's configuration.
+	if record.BackupSHA256 != "" && hashSHA256(data) != record.BackupSHA256 {
+		return fmt.Errorf("backup replaced after the crash")
 	}
 	mode := os.FileMode(0600)
 	fmt.Sscanf(record.Mode, "%o", &mode)
@@ -668,6 +695,23 @@ func runFileTransaction(ctx context.Context, scope platform.Scope, name string, 
 		return nil, err
 	}
 	return result, nil
+}
+
+// txRestoredObject reports whether the object standing at the path is one
+// that a rollback of this transaction published. A rollback writes a new
+// object, so the journal has to name it: without that name the recovery
+// finds bytes it recognizes at an object it does not, and the transaction
+// would be blocked forever instead of being finished.
+func txRestoredObject(tx *fileTransaction, path, object string) bool {
+	if object == "" {
+		return false
+	}
+	for _, step := range tx.journal {
+		if step.Path == path && step.RestoredObject != "" && step.RestoredObject == object {
+			return true
+		}
+	}
+	return false
 }
 
 // recoverTransactions replays write-ahead journals left behind by crashes.
@@ -818,25 +862,26 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 				digest := hashSHA256(current)
 				expected := map[string]bool{}
 				previousDigest := ""
-				// A rollback that was interrupted after restoring a file
-				// leaves the restored object at the path. Its identity is
-				// named by the journal entry, and its content is the
-				// backup of that entry, so it can be told apart from a
-				// foreign file that merely carries the same bytes.
-				restored := map[string]bool{}
 				for _, step := range tx.journal {
 					if step.Path == path {
 						if step.PublishedSHA256 != "" {
 							expected[step.PublishedSHA256] = true
 						}
 						if step.Backup != "" {
-							if saved, err := os.ReadFile(step.Backup); err == nil {
-								previous := hashSHA256(saved)
+							// The journal records the content it wrote into
+							// the backup, so the preflight compares the file
+							// at the path against a fact from the journal
+							// and not against whatever the backup file
+							// happens to contain now.
+							previous := step.BackupSHA256
+							if previous == "" {
+								if saved, err := os.ReadFile(step.Backup); err == nil {
+									previous = hashSHA256(saved)
+								}
+							}
+							if previous != "" {
 								expected[previous] = true
 								previousDigest = previous
-								if step.RestoredObject != "" && previous == digest {
-									restored[step.RestoredObject] = true
-								}
 							}
 						}
 					}
@@ -848,14 +893,28 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 				// is still an object this transaction owns. The recorded
 				// content says which object belongs there: the published
 				// one when the replacement already ran, the previous one
-				// when it never did, the restored one when a rollback had
-				// already put the backup back. The recorded identity must
-				// match, so a replacement carrying the same bytes is refused
+				// when it never did. The recorded identity must match, so
+				// a replacement carrying the same bytes is refused
 				// instead of being undone as if it were our own file.
 				rec := latest[path]
 				if rec.PrevObject == "" && rec.PublishedObject == "" && rec.RestoredObject == "" {
 					// A journal written before identities were recorded
 					// keeps the content-only preflight.
+					continue
+				}
+				object, oerr := txObjectIdentity(path)
+				if oerr != nil {
+					return control("transaction-current-drifted", exitUnverify)
+				}
+				// A rollback publishes a NEW object, so a rollback that was
+				// interrupted after restoring a file leaves an object at the
+				// path that neither the published nor the previous identity
+				// names. The journal names it, and the recovery recognizes
+				// its own work instead of refusing the transaction forever.
+				// The check comes first: that object is the one the rollback
+				// published, and the previous object it replaced was freed by
+				// the publication, so it must not stay a candidate.
+				if txRestoredObject(tx, path, object) {
 					continue
 				}
 				candidates := map[string]bool{}
@@ -871,11 +930,7 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 					candidates[rec.PrevObject] = true
 					candidates[rec.PublishedObject] = true
 				}
-				for object := range restored {
-					candidates[object] = true
-				}
-				object, oerr := txObjectIdentity(path)
-				if oerr != nil || !candidates[object] {
+				if !candidates[object] {
 					return control("transaction-current-drifted", exitUnverify)
 				}
 			}

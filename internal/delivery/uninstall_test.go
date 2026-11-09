@@ -109,6 +109,29 @@ func TestUninstallRefusesForeignLauncherWithIdenticalBytes(t *testing.T) {
 	}
 }
 
+// TestUninstallRemovesALegacyInstallation pins the same compatibility in the
+// removal. A receipt written before the launcher object binding existed names
+// no object, so the launcher is verified by content and the journal binds the
+// object it verified. The removal completes instead of refusing an
+// installation that the release before this one created and accepted.
+func TestUninstallRemovesALegacyInstallation(t *testing.T) {
+	a, _ := installed(t)
+	legacyReceipt(t, a)
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = Uninstall(context.Background(), a, false); e != nil {
+		t.Fatalf("uninstall refused a receipt without a launcher binding: %v", e)
+	}
+	if _, e = os.Lstat(installRoot(a)); !os.IsNotExist(e) {
+		t.Fatalf("the program root was not removed: %v", e)
+	}
+	if _, e = os.Lstat(rec.BinPath); !os.IsNotExist(e) {
+		t.Fatalf("the launcher was not removed: %v", e)
+	}
+}
+
 func TestBootstrapRecoversCompletedRemovalBeforeReinstall(t *testing.T) {
 	a, _ := installed(t)
 	j := interruptUninstall(t, a, "root-removed")

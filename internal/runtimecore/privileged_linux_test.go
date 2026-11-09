@@ -171,7 +171,12 @@ func TestPrivilegedSystemdTunAndSSH(t *testing.T) {
 	privilegedStep(t, "interrupted-stopped-system-reset-and-repair", func(t *testing.T) {
 		m := mustManager(t, a)
 		bad := []byte("mode: [invalid\n")
-		if e := atomicPrivateArtifact(a, m.Core.Config, bad); e != nil {
+		tmp, _, pe := prepareArtifact(a, m.Core.Config, bad)
+		e := pe
+		if e == nil {
+			e = commitArtifact(a, m.Core.Config, tmp, false)
+		}
+		if e != nil {
 			t.Fatal(e)
 		}
 		if e := os.Chown(m.Core.Config, 0, f.ServiceGID); e != nil {

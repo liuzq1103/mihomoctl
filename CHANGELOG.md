@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — 2026-11-09
+## 0.2.0 — 2026-11-10
 
 - First publication now uses a write-ahead journal: the staged tree, the launcher and
   the receipt are written and flushed before the install root is published, so a
@@ -13,6 +13,12 @@
   gone is rolled back instead of refusing every later command, and a filesystem
   that cannot publish the root atomically is reported as
   `bootstrap-publish-unsupported` with the staged tree and journal discarded.
+  A publication whose staged launcher is removed before it can be linked can
+  never be completed, because the receipt binds the exact launcher object and a
+  replacement carrying identical bytes is a different object; the recovery
+  rolls that publication back, removing the published root and the journal,
+  instead of retaining a half-installed program that no command can roll back
+  or clear.
 
 - Full program uninstall now quarantines the receipt-bound installation atomically,
   journals exact file ownership outside the program root, and resumes interrupted
@@ -46,6 +52,30 @@
   restored object, and the recovery resumes the transaction instead of refusing
   it forever. A foreign replacement carrying the restored bytes is still
   refused after such an interruption.
+  A rollback is idempotent: a restore that already published its object is
+  recognized by the journal and never publishes a second one, so the record of
+  the first publication is not overwritten by the recovery that follows it. The
+  backup a rollback restores is compared against the digest recorded when the
+  backup was written, so a backup replaced after the crash fails the rollback
+  (`rollback-failed`) instead of deciding what is written over the user's
+  configuration.
+
+- State recorded before this project bound its objects stays usable under the
+  guarantee it was written with. A receipt that names no launcher object is
+  verified by content, exactly as the release that wrote it verified it; every
+  receipt this project writes binds the launcher object itself. A removal
+  journal written before the removal inventory was bound cannot be finished
+  under this protocol and is refused with `uninstall-legacy-journal` and a
+  documented manual remediation, instead of guessing at leftover state.
+
+- The managed configuration and the compound service files are bound by object
+  identity as well as by content. A replacement that carries identical bytes is
+  a different object and is refused (`transaction-conflict`,
+  `compound-file-conflict`) instead of being adopted as the managed file.
+
+- An option value that looks like an option is refused, exactly as the
+  reference implementation refuses it. A lone `-` and a negative number are
+  values; every other option-looking token is not.
 
 - Health checks report an evidence level (`confirmed`, `inferred`, `unavailable`)
   and a readable detail, skip listener and controller probes while the runtime is

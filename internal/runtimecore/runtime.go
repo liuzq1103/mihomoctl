@@ -207,6 +207,16 @@ type fileSnapshot struct {
 	Existed bool
 	After   []byte
 	Delete  bool
+	// PrevObject is the identity of the object that stood at Path before
+	// this transaction touched it, PublishedObject the identity of the
+	// object this transaction published there, RestoredObject the identity
+	// of the object a rollback published there. Identical bytes are not
+	// proof of ownership, so the recovery re-checks these identities
+	// before it undoes anything: a replacement file carrying the same
+	// content is a different object and must survive the recovery.
+	PrevObject      string
+	PublishedObject string
+	RestoredObject  string
 }
 type journal struct {
 	Version int
@@ -220,38 +230,116 @@ func journalPath(a platform.App) string {
 // applyFiles journals original bytes before publication. A crashed multi-file
 // write is restored under the operation lock before another mutation can run.
 func applyFiles(a platform.App, files map[string][]byte) error {
+	_, e := applyFilesBinding(a, files, nil)
+	return e
+}
+
+// applyFilesBinding publishes the files and reports the identity of every
+// object it published, so a journal that outlives this transaction can bind
+// them. The bound callback runs after the publication and before the
+// transaction journal is removed.
+func applyFilesBinding(a platform.App, files map[string][]byte, bound func(map[string]string) error) (map[string]string, error) {
+	published := map[string]string{}
 	if e := platform.CheckPath(journalPath(a)); e != nil {
-		return e
+		return nil, e
 	}
 	if _, e := os.Lstat(journalPath(a)); e == nil {
-		return platform.Usage("transaction-pending")
+		return nil, platform.Usage("transaction-pending")
 	} else if !os.IsNotExist(e) {
-		return e
+		return nil, e
 	}
 	if e := trackCompoundWrites(a, files); e != nil {
-		return e
+		return nil, e
 	}
 	j := journal{Version: 1}
+	prepared := map[string]string{}
+	defer func() {
+		for _, temporary := range prepared {
+			_ = os.Remove(temporary)
+		}
+	}()
 	for _, p := range sortedKeys(files) {
 		if !transactionPath(a, p) {
-			return platform.Usage("transaction-path-unsafe")
+			return nil, platform.Usage("transaction-path-unsafe")
 		}
 		if e := platform.CheckPath(p); e != nil {
-			return e
+			return nil, e
 		}
 		v := fileSnapshot{Path: p, After: files[p], Delete: files[p] == nil}
 		if _, e := os.Lstat(p); e == nil {
 			b, e := readManagedFile(a, p)
 			if e != nil {
-				return e
+				return nil, e
 			}
 			v.Before = b
 			v.Existed = true
+			// The object that stood at the path is bound here, so the
+			// recovery can tell it from a foreign replacement.
+			if object, oe := platform.ObjectIdentity(p); oe == nil {
+				v.PrevObject = object
+			}
 		} else if !os.IsNotExist(e) {
-			return e
+			return nil, e
+		}
+		if !v.Delete {
+			// The published object is prepared first and its identity is
+			// journaled before the rename, so a crash in the publication
+			// window still leaves a record of the object that was published.
+			temporary, object, e := prepareArtifact(a, p, files[p])
+			if e != nil {
+				return nil, e
+			}
+			prepared[p] = temporary
+			v.PublishedObject = object
 		}
 		j.Files = append(j.Files, v)
 	}
+	if e := persistTransaction(a, j); e != nil {
+		return nil, e
+	}
+	for _, f := range j.Files {
+		if e := commitArtifact(a, f.Path, prepared[f.Path], f.Delete); e != nil {
+			if r := restoreFiles(a, j); r != nil {
+				return nil, platform.Fail("rollback-failed")
+			}
+			if r := durableRemove(journalPath(a)); r != nil {
+				return nil, platform.Fail("transaction-journal-unavailable")
+			}
+			return nil, e
+		}
+	}
+	for _, f := range j.Files {
+		if object := f.PublishedObject; object != "" {
+			published[f.Path] = object
+		}
+	}
+	// A journal that outlives this transaction has to name the objects this
+	// transaction published. The callback runs while the transaction journal
+	// still names them, so no window leaves the published objects unnamed.
+	if bound != nil {
+		if e := bound(published); e != nil {
+			if r := restoreFiles(a, j); r != nil {
+				return nil, platform.Fail("rollback-failed")
+			}
+			if r := durableRemove(journalPath(a)); r != nil {
+				return nil, platform.Fail("transaction-journal-unavailable")
+			}
+			return nil, e
+		}
+	}
+	if e := durableRemove(journalPath(a)); e != nil {
+		if r := restoreFiles(a, j); r != nil {
+			return nil, platform.Fail("rollback-failed")
+		}
+		return nil, e
+	}
+	return published, nil
+}
+
+// persistTransaction writes the file journal. The journal is written before
+// every mutation it describes, so it always names the object a publication or
+// a rollback is about to create.
+func persistTransaction(a platform.App, j journal) error {
 	raw, e := json.Marshal(j)
 	if e != nil {
 		return e
@@ -262,28 +350,9 @@ func applyFiles(a platform.App, files map[string][]byte) error {
 	if e := platform.AtomicWrite(journalPath(a), append(raw, '\n'), 0600); e != nil {
 		return e
 	}
-	if e = syncDirectory(a.Scope.StateRoot); e != nil {
-		return e
-	}
-	for _, f := range j.Files {
-		if e := publishFile(a, f.Path, f.After, f.Delete); e != nil {
-			if r := restoreFiles(a, j); r != nil {
-				return platform.Fail("rollback-failed")
-			}
-			if r := durableRemove(journalPath(a)); r != nil {
-				return platform.Fail("transaction-journal-unavailable")
-			}
-			return e
-		}
-	}
-	if e := durableRemove(journalPath(a)); e != nil {
-		if r := restoreFiles(a, j); r != nil {
-			return platform.Fail("rollback-failed")
-		}
-		return e
-	}
-	return nil
+	return syncDirectory(a.Scope.StateRoot)
 }
+
 func transactionPath(a platform.App, p string) bool {
 	return absolute(p) && (a.Scope.Contains(p) || p == unitPath(a) || within(unitPath(a)+".d", p) || integrationPathAllowed(a, p)) && p != journalPath(a) && p != compoundPath(a)
 }
@@ -300,31 +369,40 @@ func publishFile(a platform.App, p string, b []byte, remove bool) error {
 		}
 		return durableRemove(p)
 	}
-	return atomicPrivateArtifact(a, p, b)
+	temporary, _, e := prepareArtifact(a, p, b)
+	if e != nil {
+		return e
+	}
+	defer os.Remove(temporary)
+	return commitArtifact(a, p, temporary, false)
 }
 
 // Standard systemd parent directories may be 0755. Validate their ownership
 // without changing their permissions, and always publish private managed leaves.
-func atomicPrivateArtifact(a platform.App, p string, b []byte) error {
+// prepareArtifact writes the payload into a temporary file beside the
+// destination and returns that file and its identity. The temporary file is
+// the object that will be published, so the journal can record it before the
+// rename: the recovery then tells the published object from a foreign
+// replacement that carries identical bytes.
+func prepareArtifact(a platform.App, p string, b []byte) (string, string, error) {
 	if e := platform.CheckPath(p); e != nil {
-		return e
+		return "", "", e
 	}
 	if _, e := os.Lstat(p); e == nil {
 		if _, e = readManagedFile(a, p); e != nil {
-			return e
+			return "", "", e
 		}
 	} else if !os.IsNotExist(e) {
-		return e
+		return "", "", e
 	}
 	if e := checkArtifactDir(filepath.Dir(p)); e != nil {
-		return e
+		return "", "", e
 	}
 	f, e := os.CreateTemp(filepath.Dir(p), ".mihomoctl-go-*")
 	if e != nil {
-		return e
+		return "", "", e
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
 	if e = f.Chmod(0600); e == nil {
 		_, e = f.Write(b)
 	}
@@ -336,10 +414,32 @@ func atomicPrivateArtifact(a platform.App, p string, b []byte) error {
 		e = ce
 	}
 	if e != nil {
-		return e
+		_ = os.Remove(tmp)
+		return "", "", e
 	}
-	if e = os.Rename(tmp, p); e != nil {
-		return e
+	object, e := platform.ObjectIdentity(tmp)
+	if e != nil {
+		_ = os.Remove(tmp)
+		return "", "", e
+	}
+	return tmp, object, nil
+}
+
+// commitArtifact publishes the prepared temporary file over the destination,
+// or removes the destination when the transaction deletes it, and makes the
+// change durable.
+func commitArtifact(a platform.App, p, tmp string, remove bool) error {
+	if remove {
+		if _, e := os.Lstat(p); os.IsNotExist(e) {
+			return nil
+		}
+		if _, e := readManagedFile(a, p); e != nil {
+			return e
+		}
+		return durableRemove(p)
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		return err
 	}
 	if d, e := os.Open(filepath.Dir(p)); e == nil {
 		_ = d.Sync()
@@ -347,36 +447,70 @@ func atomicPrivateArtifact(a platform.App, p string, b []byte) error {
 	}
 	return nil
 }
+
+// restoreFiles publishes the recorded original bytes. A rollback publishes a
+// NEW object, so the journal names it before the rename: a recovery that is
+// interrupted between the restore and the journal removal recognizes its own
+// work instead of refusing the transaction forever.
 func restoreFiles(a platform.App, j journal) error {
 	for i := len(j.Files) - 1; i >= 0; i-- {
 		f := j.Files[i]
-		if e := publishFile(a, f.Path, f.Before, !f.Existed); e != nil {
+		if !f.Existed {
+			// The file did not exist before the transaction, so the rollback
+			// removes it instead of publishing an object.
+			if e := publishFile(a, f.Path, f.Before, true); e != nil {
+				return e
+			}
+			continue
+		}
+		if f.RestoredObject != "" {
+			if object, oe := platform.ObjectIdentity(f.Path); oe == nil && object == f.RestoredObject {
+				// The restore already published this object. Publishing a
+				// second one would overwrite the only record of the first.
+				continue
+			}
+		}
+		temporary, object, e := prepareArtifact(a, f.Path, f.Before)
+		if e != nil {
+			return e
+		}
+		f.RestoredObject = object
+		j.Files[i] = f
+		if e := persistTransaction(a, j); e != nil {
+			_ = os.Remove(temporary)
+			return e
+		}
+		if e := commitArtifact(a, f.Path, temporary, false); e != nil {
+			_ = os.Remove(temporary)
 			return e
 		}
 	}
 	return nil
 }
-func recoverTransaction(a platform.App) error {
-	p := journalPath(a)
-	if e := platform.CheckPath(p); e != nil {
-		return e
-	}
-	if _, e := os.Lstat(p); os.IsNotExist(e) {
-		return nil
-	}
-	b, e := readPrivateBounded(p, fileJournalLimit)
-	if e != nil {
-		return e
-	}
-	var j journal
-	if json.Unmarshal(b, &j) != nil || j.Version != 1 || len(j.Files) > 1024 {
-		return platform.Usage("transaction-invalid")
-	}
+
+// validateTransactionFiles checks a pending file journal without undoing it.
+// Every destination must still hold the object this transaction published or
+// the object it replaced: a foreign replacement that carries identical bytes
+// is a different object and must not be overwritten or removed.
+func validateTransactionFiles(a platform.App, j journal) error {
 	for _, f := range j.Files {
 		if !transactionPath(a, f.Path) {
 			return platform.Usage("transaction-invalid")
 		}
 		if _, e := os.Lstat(f.Path); e == nil {
+			// The journal binds the objects it published and the objects
+			// it replaced. A foreign replacement carrying the same bytes is
+			// a different object, and the recovery must not undo it as if it
+			// were the transaction's own file.
+			if f.PublishedObject != "" || f.PrevObject != "" || f.RestoredObject != "" {
+				object, oe := platform.ObjectIdentity(f.Path)
+				if oe != nil {
+					return oe
+				}
+				if object != f.PublishedObject && object != f.PrevObject && object != f.RestoredObject {
+					return platform.Usage("transaction-conflict")
+				}
+			}
 			current, e := readManagedFile(a, f.Path)
 			if e != nil {
 				return e
@@ -386,10 +520,64 @@ func recoverTransaction(a platform.App) error {
 			}
 		}
 	}
+	return nil
+}
+
+// loadTransaction reads the pending file journal.
+func loadTransaction(a platform.App) (journal, bool, error) {
+	var j journal
+	p := journalPath(a)
+	if e := platform.CheckPath(p); e != nil {
+		return j, false, e
+	}
+	if _, e := os.Lstat(p); os.IsNotExist(e) {
+		return j, false, nil
+	} else if e != nil {
+		return j, false, e
+	}
+	b, e := readPrivateBounded(p, fileJournalLimit)
+	if e != nil {
+		return j, false, e
+	}
+	if json.Unmarshal(b, &j) != nil || j.Version != 1 || len(j.Files) > 1024 {
+		return j, false, platform.Usage("transaction-invalid")
+	}
+	return j, true, nil
+}
+
+func recoverTransaction(a platform.App) error {
+	j, pending, e := loadTransaction(a)
+	if e != nil {
+		return e
+	}
+	if !pending {
+		return nil
+	}
+	if e = validateTransactionFiles(a, j); e != nil {
+		return e
+	}
 	if e = restoreFiles(a, j); e != nil {
 		return platform.Fail("rollback-failed")
 	}
-	return durableRemove(p)
+	return durableRemove(journalPath(a))
+}
+
+// discardTransaction validates a pending file journal and removes it without
+// publishing anything. The compound recovery restores the same files itself
+// and names every object it publishes in the compound journal, so it must not
+// leave objects that no journal names.
+func discardTransaction(a platform.App) error {
+	j, pending, e := loadTransaction(a)
+	if e != nil {
+		return e
+	}
+	if !pending {
+		return nil
+	}
+	if e = validateTransactionFiles(a, j); e != nil {
+		return e
+	}
+	return durableRemove(journalPath(a))
 }
 func bytesEqual(a, b []byte) bool { return string(a) == string(b) }
 

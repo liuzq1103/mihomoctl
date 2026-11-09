@@ -233,7 +233,20 @@ func recoverBootstrapWithHooks(a platform.App, h bootstrapHooks) error {
 		}
 	}
 	if !bin && !stagedLauncher {
-		return fail("bootstrap-launcher-source-missing")
+		// The staged launcher is gone and the public launcher was never
+		// published. The receipt binds the exact launcher object, and that
+		// object was released together with the staging directory: a
+		// replacement carrying identical bytes is a different object, so
+		// publishing it would break the binding the receipt records. This
+		// publication can therefore never be rolled forward. The remnants this
+		// journal owns are undone instead, so the scope stays usable instead of
+		// retaining a half-installed program that no command can roll back or
+		// clear.
+		if e = abandonBootstrap(a, j); e != nil {
+			return e
+		}
+		return platform.FailDetail("bootstrap-launcher-source-missing",
+			"the staged launcher was removed before it could be published; the incomplete installation was rolled back and the installation has to be run again")
 	}
 	if !root {
 		if e = publishBootstrapRoot(j.Stage, j.Root); e != nil {
@@ -326,6 +339,22 @@ func recoverBootstrapWithHooks(a platform.App, h bootstrapHooks) error {
 // every later command.
 func abandonBootstrap(a platform.App, j bootstrapJournal) error {
 	var e error
+	if exists, e := optionalExists(j.Root); e != nil {
+		return e
+	} else if exists {
+		// A published root is ours while its identity still matches the
+		// journal. It is removed only when it matches, so a foreign directory
+		// standing at the path is never touched.
+		if e = verifyBootstrapFile(j.Root, j.RootFile); e != nil {
+			return e
+		}
+		if e = os.RemoveAll(j.Root); e != nil {
+			return e
+		}
+		if e = syncDir(a.Scope.DataRoot); e != nil {
+			return e
+		}
+	}
 	if exists, e := optionalExists(j.Stage); e != nil {
 		return e
 	} else if exists {

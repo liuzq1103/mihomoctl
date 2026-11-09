@@ -165,6 +165,87 @@ func TestTransactionRecoveryAcceptsItsOwnInterruptedRollback(t *testing.T) {
 	}
 }
 
+// TestTransactionRecoveryKeepsTheRestoredObjectItAlreadyPublished pins the
+// repeated-interruption case. A recovery that finds its own restored object at
+// the path has to finish the transaction instead of restoring a second time: a
+// second restore would publish a new object and overwrite the only record of
+// the first one, so the next recovery would find bytes it recognizes at an
+// object it does not know and refuse the transaction forever.
+func TestTransactionRecoveryKeepsTheRestoredObjectItAlreadyPublished(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, target, "original", 0600)
+
+	tx, err := beginFileTransaction(scope, "test-repeat-interrupted", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("published"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.undoRecord(&tx.journal[0]); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := txObjectIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverTransactions(scope, false); err != nil {
+		t.Fatalf("recovery refused its own interrupted rollback: %v", err)
+	}
+	after, err := txObjectIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != restored {
+		t.Fatalf("the recovery published the object %q instead of keeping the restored one %q", after, restored)
+	}
+	if readTxFile(t, target) != "original" {
+		t.Fatalf("content = %q", readTxFile(t, target))
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 0 {
+		t.Fatalf("recovery left journals behind: %v", entries)
+	}
+}
+
+// TestTransactionRecoveryRefusesAReplacedBackup pins the integrity of the
+// journal's own dependencies. The backup file is where a rollback reads the
+// bytes it publishes, so the journal records the content it wrote there. A
+// backup that was replaced after the crash must not decide what is written
+// over the user's configuration.
+func TestTransactionRecoveryRefusesAReplacedBackup(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, target, "original", 0600)
+
+	tx, err := beginFileTransaction(scope, "test-replaced-backup", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("published"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if tx.journal[0].BackupSHA256 == "" {
+		t.Fatal("the backup content was not journaled")
+	}
+	backup := tx.journal[0].Backup
+	if backup == "" {
+		t.Fatal("the journal names no backup")
+	}
+	// A foreign process replaces the backup file with different bytes.
+	writeTxFile(t, backup, "replaced", 0600)
+
+	err = recoverTransactions(scope, false)
+	mustCode(t, err, "rollback-failed")
+	if readTxFile(t, target) != "published" {
+		t.Fatalf("the recovery published a replaced backup: %q", readTxFile(t, target))
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 1 {
+		t.Fatalf("the refused journal was not retained: %v", entries)
+	}
+}
+
 // TestTransactionRecoveryRefusesForeignObjectAfterInterruptedRollback pins
 // the other half of the same invariant: an interrupted rollback does not
 // open the door to a foreign replacement. A file that carries the restored

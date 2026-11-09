@@ -71,8 +71,17 @@ func readReceipt(a platform.App) (Receipt, error) {
 	if e != nil {
 		return rec, fail("installation-launcher-drift")
 	}
-	if device != 0 && (device != rec.LauncherDevice || inode != rec.LauncherInode) {
-		return rec, fail("installation-launcher-drift")
+	// A receipt written before the launcher object binding existed names no
+	// object. The published launcher was unlinked from its staging path after
+	// the publication, so that object cannot be recovered afterwards and there
+	// is nothing to compare against. Such a receipt keeps the guarantee it
+	// was written with: the launcher is verified by content, exactly as the
+	// release that wrote it verified it. The object binding applies to every
+	// receipt this project writes.
+	if rec.LauncherDevice != 0 || rec.LauncherInode != 0 {
+		if device != 0 && (device != rec.LauncherDevice || inode != rec.LauncherInode) {
+			return rec, fail("installation-launcher-drift")
+		}
 	}
 	return rec, nil
 }

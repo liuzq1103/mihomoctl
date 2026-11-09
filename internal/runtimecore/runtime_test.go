@@ -196,6 +196,88 @@ func TestTransactionRollbackAndCrashRecovery(t *testing.T) {
 	}
 	requireCode(t, recoverTransaction(a), "transaction-invalid")
 }
+
+// TestTransactionRefusesForeignObjectWithIdenticalBytes pins the ownership
+// invariant of the runtime file transaction. The journal binds the objects it
+// published and the objects it replaced, so a replacement file carrying the
+// same content is a different object. The recovery refuses it instead of
+// undoing it as if it were the transaction's own file.
+func TestTransactionRefusesForeignObjectWithIdenticalBytes(t *testing.T) {
+	a, _ := fixture(t)
+	p := filepath.Join(a.Scope.ConfigRoot, "one")
+	if e := platform.AtomicWrite(p, []byte("before"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	previous, e := platform.ObjectIdentity(p)
+	if e != nil || previous == "" {
+		t.Skip("no object identity on this platform")
+	}
+	if e := platform.AtomicWrite(p, []byte("after"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	published, e := platform.ObjectIdentity(p)
+	if e != nil || published == "" || published == previous {
+		t.Fatal("the publication did not create a new object")
+	}
+	j := journal{1, []fileSnapshot{{Path: p, Before: []byte("before"), Existed: true, After: []byte("after"), PrevObject: previous, PublishedObject: published}}}
+	if e := platform.WriteJSON(journalPath(a), j); e != nil {
+		t.Fatal(e)
+	}
+	// A foreign process replaces the published file with a new object that
+	// carries exactly the same bytes.
+	foreign := p + ".foreign"
+	if e := platform.AtomicWrite(foreign, []byte("after"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e := os.Rename(foreign, p); e != nil {
+		t.Fatal(e)
+	}
+	replacement, e := platform.ObjectIdentity(p)
+	if e != nil || replacement == published {
+		t.Fatal("the replacement did not create a new object")
+	}
+	requireCode(t, recoverTransaction(a), "transaction-conflict")
+	if b, _ := platform.ReadPrivate(p); string(b) != "after" {
+		t.Fatal("the recovery overwrote a foreign replacement")
+	}
+}
+
+// A rollback publishes a new object and journals its identity before the
+// rename. A recovery that is interrupted between the restore and the journal
+// removal finds its own object at the path: it has to recognize that object
+// and finish the transaction instead of publishing a second one or refusing
+// its own work.
+func TestTransactionRecoveryRecognizesItsOwnRestoredObject(t *testing.T) {
+	a, _ := fixture(t)
+	p := filepath.Join(a.Scope.ConfigRoot, "one")
+	if e := platform.AtomicWrite(p, []byte("before"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	restored, e := platform.ObjectIdentity(p)
+	if e != nil || restored == "" {
+		t.Skip("no object identity on this platform")
+	}
+	j := journal{1, []fileSnapshot{{Path: p, Before: []byte("before"), Existed: true, After: []byte("after"), RestoredObject: restored}}}
+	if e := platform.WriteJSON(journalPath(a), j); e != nil {
+		t.Fatal(e)
+	}
+	if e := recoverTransaction(a); e != nil {
+		t.Fatal(e)
+	}
+	if b, _ := platform.ReadPrivate(p); string(b) != "before" {
+		t.Fatal(string(b))
+	}
+	// The restore must not publish a second object: the recorded identity
+	// still has to be the one standing at the path.
+	current, e := platform.ObjectIdentity(p)
+	if e != nil || current != restored {
+		t.Fatal("the recovery published a second object", e)
+	}
+	if _, e := os.Lstat(journalPath(a)); !os.IsNotExist(e) {
+		t.Fatal("the transaction journal was retained", e)
+	}
+}
+
 func TestTransactionConflictPreservesNewState(t *testing.T) {
 	a, _ := fixture(t)
 	p := filepath.Join(a.Scope.ConfigRoot, "one")

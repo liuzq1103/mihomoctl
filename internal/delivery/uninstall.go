@@ -125,10 +125,18 @@ func collectRemoval(a platform.App) (removalJournal, error) {
 	if e != nil {
 		return j, e
 	}
-	if device != rec.LauncherDevice || inode != rec.LauncherInode {
-		return j, fail("uninstall-launcher-drift")
+	if rec.LauncherDevice != 0 || rec.LauncherInode != 0 {
+		if device != rec.LauncherDevice || inode != rec.LauncherInode {
+			return j, fail("uninstall-launcher-drift")
+		}
+		j.LauncherDevice, j.LauncherInode = rec.LauncherDevice, rec.LauncherInode
+	} else {
+		// A receipt written before the launcher object binding existed names
+		// no object. The launcher was verified by content, so the journal
+		// binds the object it verified: a launcher replaced during the
+		// removal is still refused as a foreign file.
+		j.LauncherDevice, j.LauncherInode = device, inode
 	}
-	j.LauncherDevice, j.LauncherInode = rec.LauncherDevice, rec.LauncherInode
 	children, e := os.ReadDir(root)
 	if e != nil {
 		return j, e
@@ -194,11 +202,34 @@ func collectRemoval(a platform.App) (removalJournal, error) {
 	return j, e
 }
 
+// legacyRemovalJournal reports whether the journal was written by the
+// removal protocol that predates the bound inventory. That protocol staged
+// the program root in a fixed directory and recorded only the receipt and
+// launcher hashes, so its journal cannot be verified against an inventory.
+func legacyRemovalJournal(b []byte) bool {
+	var probe struct {
+		Format int `json:"format"`
+	}
+	if json.Unmarshal(b, &probe) != nil {
+		return false
+	}
+	return probe.Format == 2
+}
+
 func loadRemoval(a platform.App) (removalJournal, error) {
 	var j removalJournal
 	b, e := platform.ReadPrivate(uninstallJournal(a))
 	if e != nil {
 		return j, e
+	}
+	if legacyRemovalJournal(b) {
+		// A journal written before the removal protocol bound the inventory
+		// names no file and no object, so the removal cannot be finished under
+		// this protocol: it deletes only the files it captured and verified
+		// before the first deletion. The operator clears the leftover state
+		// by hand, exactly as the delivery contract describes.
+		return j, platform.FailDetail("uninstall-legacy-journal",
+			"the removal journal was written before the inventory was bound and cannot be finished under this protocol; remove the removal journal from the state directory and the leftover removal state from the data directory by hand, then install again")
 	}
 	if e = StrictJSON(b, &j); e != nil {
 		return j, e
