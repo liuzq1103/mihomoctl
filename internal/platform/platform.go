@@ -350,11 +350,10 @@ func AtomicWrite(path string, b []byte, mode os.FileMode) error {
 	if e = os.Rename(tmp, path); e != nil {
 		return e
 	}
-	if d, e := os.Open(filepath.Dir(path)); e == nil {
-		_ = d.Sync()
-		d.Close()
-	}
-	return nil
+	// A rename is only durable once the directory entry itself is flushed.
+	// The failure is reported: a publication that cannot confirm its
+	// durability must not be reported as a success.
+	return SyncDirectory(filepath.Dir(path))
 }
 func WriteJSON(path string, v any) error {
 	b, e := json.MarshalIndent(v, "", "  ")
@@ -523,6 +522,27 @@ func WithLock(ctx context.Context, s Scope, fn func() error) error {
 	}
 	return withLock(ctx, filepath.Join(s.RuntimeRoot, "manager.lock"), func() error {
 		if e := recoverAll(ctx, s); e != nil {
+			return e
+		}
+		return fn()
+	})
+}
+
+// WithPreviewLock takes the same scope lock as WithLock but never replays a
+// recovery journal. A preview must not change the live configuration: a
+// pending recovery is refused instead of replayed, so the journal survives
+// the preview and the next explicitly authorized mutation finishes it. The
+// lock is still taken, so a preview never observes state another mutation is
+// halfway through publishing.
+func WithPreviewLock(ctx context.Context, s Scope, fn func() error) error {
+	if e := s.RequireMutation(); e != nil {
+		return e
+	}
+	if e := PrivateDir(s.RuntimeRoot); e != nil {
+		return e
+	}
+	return withLock(ctx, filepath.Join(s.RuntimeRoot, "manager.lock"), func() error {
+		if e := CheckPending(s); e != nil {
 			return e
 		}
 		return fn()

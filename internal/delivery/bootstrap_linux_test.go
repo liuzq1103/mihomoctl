@@ -334,6 +334,90 @@ func TestBootstrapRollsBackWhenTheStagedLauncherIsGone(t *testing.T) {
 	}
 }
 
+// An interrupted abandonment leaves the published root renamed out of the
+// way, and its removal may already have deleted part of the tree. The next
+// recovery has to finish that removal: a partly removed tree standing at the
+// published path would fail the inventory check and block every later command
+// for good.
+func TestBootstrapResumesAnInterruptedAbandonment(t *testing.T) {
+	a, source, bin := crashBootstrap(t, "root-published")
+	j, e := loadBootstrap(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.RemoveAll(j.LauncherDir); e != nil {
+		t.Fatal(e)
+	}
+	// The interruption: the root was renamed out of the way and the removal
+	// of the tombstone had already deleted part of the tree.
+	tombstone := bootstrapTombstone(a, j)
+	if e = os.Rename(j.Root, tombstone); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Remove(filepath.Join(tombstone, "current")); e != nil {
+		t.Fatal(e)
+	}
+	if e = recoverBootstrap(a); e != nil {
+		t.Fatalf("the recovery did not finish the interrupted abandonment: %v", e)
+	}
+	if exists, e := optionalExists(tombstone); e != nil || exists {
+		t.Fatal("the tombstone was retained", e)
+	}
+	if exists, e := optionalExists(bootstrapJournalPath(a)); e != nil || exists {
+		t.Fatal("journal retained", e)
+	}
+	publicInstallation(t, a, "install", source, bin)
+	if _, e := readReceipt(a); e != nil {
+		t.Fatal(e)
+	}
+}
+
+// An interrupted abandonment is resumed by removing exactly the objects the
+// journal inventoried. An object the journal never recorded is foreign: it
+// survives the removal, and the private abandoned directory keeps it instead
+// of being deleted with it.
+func TestBootstrapAbandonmentPreservesForeignObjects(t *testing.T) {
+	a, source, bin := crashBootstrap(t, "root-published")
+	j, e := loadBootstrap(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// The interruption: the root was renamed out of the way, and an object
+	// that the journal never recorded appeared in the renamed tree.
+	tombstone := bootstrapTombstone(a, j)
+	if e = os.Rename(j.Root, tombstone); e != nil {
+		t.Fatal(e)
+	}
+	foreign := filepath.Join(tombstone, "foreign")
+	if e = os.WriteFile(foreign, []byte("not owned"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = recoverBootstrap(a); e != nil {
+		t.Fatalf("the recovery did not finish the interrupted abandonment: %v", e)
+	}
+	// The foreign object survived: it was never journaled, so it was never a
+	// deletion target.
+	data, e := os.ReadFile(foreign)
+	if e != nil || string(data) != "not owned" {
+		t.Fatalf("the foreign object was removed: %q %v", data, e)
+	}
+	// The journaled objects of the abandoned tree are gone.
+	for _, name := range []string{"current", "receipt.json", "generations"} {
+		if exists, e := optionalExists(filepath.Join(tombstone, name)); e != nil || exists {
+			t.Fatalf("a journaled object survived the removal: %s %v", name, e)
+		}
+	}
+	if exists, e := optionalExists(bootstrapJournalPath(a)); e != nil || exists {
+		t.Fatal("journal retained", e)
+	}
+	// The scope stays usable: the abandoned tree holds a foreign object, but
+	// the publication it described is gone and the journal is discarded.
+	publicInstallation(t, a, "install", source, bin)
+	if _, e := readReceipt(a); e != nil {
+		t.Fatal(e)
+	}
+}
+
 // A publication that can never succeed on this kernel or filesystem must be
 // rolled back; a foreign destination is a conflict, not an unsupported system.
 func TestPublishRollbackDetectsUnsupportedSystem(t *testing.T) {

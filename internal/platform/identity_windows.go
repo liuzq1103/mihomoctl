@@ -23,3 +23,7 @@ func ObjectIdentity(path string) (string, error) {
 	}
 	return fmt.Sprintf("%d:%d:%d", uint32(info.VolumeSerialNumber), info.FileIndexHigh, info.FileIndexLow), nil
 }
+
+// SyncDirectory has no portable meaning on Windows: a rename is made durable
+// by the filesystem itself and a directory handle cannot be flushed.
+func SyncDirectory(string) error { return nil }

@@ -25,3 +25,15 @@ func ObjectIdentity(path string) (string, error) {
 	}
 	return fmt.Sprintf("%d:%d", uint64(st.Dev), uint64(st.Ino)), nil
 }
+
+// SyncDirectory makes the directory entries of path durable. A rename is only
+// durable once the directory itself is flushed, so a publication that cannot
+// confirm it has to report the failure instead of claiming success.
+func SyncDirectory(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}

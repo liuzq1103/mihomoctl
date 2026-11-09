@@ -337,8 +337,34 @@ func recoverBootstrapWithHooks(a platform.App, h bootstrapHooks) error {
 // removes only objects the journal proves are ours, never a foreign file, and
 // it discards our own journal so the scope stays usable instead of refusing
 // every later command.
+// bootstrapTombstone is the private name a published root is renamed to
+// before it is removed. The name is derived from the journal token, so an
+// interrupted removal leaves a directory the next recovery finds without
+// guessing, and a partly removed tree never stands at the published path.
+func bootstrapTombstone(a platform.App, j bootstrapJournal) string {
+	return filepath.Join(a.Scope.DataRoot, ".install-abandoned-"+j.Token)
+}
+
 func abandonBootstrap(a platform.App, j bootstrapJournal) error {
 	var e error
+	tombstone := bootstrapTombstone(a, j)
+	if exists, e := optionalExists(tombstone); e != nil {
+		return e
+	} else if exists {
+		// A previous abandonment was interrupted after the root was renamed
+		// out of the way. The tombstone carries the identity the journal
+		// recorded for that root, so it is removed only when it is still
+		// ours, and its removal resumes here.
+		if e = verifyBootstrapFile(tombstone, j.RootFile); e != nil {
+			return e
+		}
+		if e = removeBootstrapTree(tombstone, j); e != nil {
+			return e
+		}
+		if e = syncDir(a.Scope.DataRoot); e != nil {
+			return e
+		}
+	}
 	if exists, e := optionalExists(j.Root); e != nil {
 		return e
 	} else if exists {
@@ -348,7 +374,18 @@ func abandonBootstrap(a platform.App, j bootstrapJournal) error {
 		if e = verifyBootstrapFile(j.Root, j.RootFile); e != nil {
 			return e
 		}
-		if e = os.RemoveAll(j.Root); e != nil {
+		// The root is renamed out of the way before it is removed. A rename
+		// is atomic, so an interrupted removal never leaves a partly deleted
+		// tree at the published path: the next recovery would find an
+		// incomplete inventory there and refuse it for good. The tombstone
+		// keeps the recorded identity, so the removal resumes on it.
+		if e = os.Rename(j.Root, tombstone); e != nil {
+			return e
+		}
+		if e = syncDir(a.Scope.DataRoot); e != nil {
+			return e
+		}
+		if e = removeBootstrapTree(tombstone, j); e != nil {
 			return e
 		}
 		if e = syncDir(a.Scope.DataRoot); e != nil {
@@ -361,7 +398,7 @@ func abandonBootstrap(a platform.App, j bootstrapJournal) error {
 		if e = verifyBootstrapFile(j.Stage, j.RootFile); e != nil {
 			return e
 		}
-		if e = os.RemoveAll(j.Stage); e != nil {
+		if e = removeBootstrapTree(j.Stage, j); e != nil {
 			return e
 		}
 		if e = syncDir(filepath.Dir(j.Stage)); e != nil {
@@ -386,7 +423,16 @@ func abandonBootstrap(a platform.App, j bootstrapJournal) error {
 				return e
 			}
 		}
-		if e = os.RemoveAll(j.LauncherDir); e != nil {
+		// The staged launcher is the only object this journal records in that
+		// directory. It is removed by identity, and the directory itself is
+		// removed only when it is empty, so an object that appeared there and
+		// was never journaled survives.
+		if len(children) > 0 {
+			if e = os.Remove(filepath.Join(j.LauncherDir, "launcher")); e != nil {
+				return e
+			}
+		}
+		if e = removeEmptyDir(j.LauncherDir); e != nil {
 			return e
 		}
 		if e = syncDir(filepath.Dir(j.LauncherDir)); e != nil {
@@ -412,6 +458,91 @@ func abandonBootstrap(a platform.App, j bootstrapJournal) error {
 		return e
 	}
 	return syncDir(a.Scope.StateRoot)
+}
+
+// removeBootstrapTree removes exactly the objects the journal inventoried.
+// The inventory is the only authority: an object the journal never recorded
+// is foreign and is never removed, and the directory holding it stays as
+// well, because removing that directory would take the foreign object with
+// it. An object that is already gone is skipped, so an interrupted removal
+// resumes instead of failing.
+func removeBootstrapTree(root string, j bootstrapJournal) error {
+	names := make([]string, 0, len(j.Entries))
+	for name := range j.Entries {
+		names = append(names, name)
+	}
+	// Deepest first: a file is removed before the directory holding it.
+	sort.Slice(names, func(i, k int) bool {
+		return strings.Count(names[i], "/") > strings.Count(names[k], "/")
+	})
+	for _, name := range names {
+		entry := j.Entries[name]
+		if entry.Directory {
+			continue
+		}
+		path := filepath.Join(root, filepath.FromSlash(name))
+		got, e := bootstrapIdentity(path)
+		if e != nil {
+			if os.IsNotExist(e) {
+				// An interrupted removal already deleted it.
+				continue
+			}
+			// The path holds something the journal did not record for it: a
+			// symlink, a special file, a replacement, or an object owned by
+			// somebody else. It is foreign, and a foreign object is never
+			// removed.
+			continue
+		}
+		if got != entry {
+			continue
+		}
+		if e = os.Remove(path); e != nil {
+			return e
+		}
+	}
+	for _, name := range names {
+		entry := j.Entries[name]
+		if !entry.Directory {
+			continue
+		}
+		path := filepath.Join(root, filepath.FromSlash(name))
+		got, e := bootstrapIdentity(path)
+		if e != nil || got != entry {
+			continue
+		}
+		if e = removeEmptyDir(path); e != nil {
+			return e
+		}
+	}
+	return removeEmptyDir(root)
+}
+
+// removeEmptyDir removes a directory that holds nothing. A directory that
+// still holds an object is left in place: that object is foreign and must
+// survive, and the directory is the only thing that carries it.
+func removeEmptyDir(path string) error {
+	entries, e := os.ReadDir(path)
+	if e != nil {
+		if os.IsNotExist(e) {
+			return nil
+		}
+		return e
+	}
+	if len(entries) > 0 {
+		return nil
+	}
+	if e = os.Remove(path); e != nil {
+		if os.IsNotExist(e) {
+			return nil
+		}
+		if again, re := os.ReadDir(path); re == nil && len(again) > 0 {
+			// The directory became non-empty between the check and the
+			// removal: a foreign object arrived and it stays.
+			return nil
+		}
+		return e
+	}
+	return nil
 }
 
 func bootstrap(ctx context.Context, a platform.App, source, binDir string, dry bool, h bootstrapHooks) (map[string]any, error) {

@@ -67,11 +67,14 @@ func Execute(ctx context.Context, system bool, r platform.Request) platform.Enve
 func recoversOnMutation(r platform.Request) bool {
 	// A preview must never enter WithLock: its recovery hooks can complete
 	// destructive operations before the command's own dry-run check runs.
+	// A subscription preview is such a preview — it stages a plan and never
+	// changes the live configuration — so it refuses a pending recovery
+	// instead of replaying the journal that would change it.
 	if r.Has("dry-run") {
 		return false
 	}
 	switch r.Name() {
-	case "init", "start", "stop", "restart", "profile-set-default", "core-adopt", "service-install", "service-start", "service-stop", "service-restart", "service-uninstall", "tun-enable", "tun-disable", "integration-install", "integration-remove", "controller-initialize", "controller-setup", "subscription-preview", "subscription-apply", "installation-install", "installation-uninstall", "installation-recover":
+	case "init", "start", "stop", "restart", "profile-set-default", "core-adopt", "service-install", "service-start", "service-stop", "service-restart", "service-uninstall", "tun-enable", "tun-disable", "integration-install", "integration-remove", "controller-initialize", "controller-setup", "subscription-apply", "installation-install", "installation-uninstall", "installation-recover":
 		return true
 	case "reset", "migrate", "manual", "override", "health-check":
 		return r.Has("apply")

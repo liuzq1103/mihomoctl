@@ -178,25 +178,49 @@ func procIP(s string) string {
 	return ip.String()
 }
 
-func listenerPresent(ep endpoint) bool {
+// procNetSocketTable reads one kernel socket table. It is a variable so a
+// test can simulate a table that cannot be read.
+var procNetSocketTable = func(name string) ([]byte, error) {
+	return os.ReadFile("/proc/net/" + name)
+}
+
+// listenerPresent reports whether the endpoint is listening. A failed reading
+// is an error and never a negative answer: an unreadable socket table must
+// not be turned into a confirmed "not listening", because nothing observed
+// the endpoint at all.
+func listenerPresent(ep endpoint) (bool, error) {
+	observed := false
 	for _, name := range []string{"tcp", "tcp6"} {
-		b, err := os.ReadFile("/proc/net/" + name)
+		b, err := procNetSocketTable(name)
 		if err != nil {
-			continue
+			if os.IsNotExist(err) {
+				// The kernel exposes no such table — IPv6 can be disabled,
+				// for instance. That is an absence, not a failed reading.
+				continue
+			}
+			return false, err
 		}
+		observed = true
 		for _, line := range strings.Split(string(b), "\n") {
 			cols := strings.Fields(line)
 			if len(cols) < 4 || cols[3] != "0A" {
 				continue
 			}
 			host, port, ok := strings.Cut(cols[1], ":")
-			n, err := strconv.ParseInt(port, 16, 32)
-			if ok && err == nil && int(n) == ep.Port && procIP(host) == ep.Address {
-				return true
+			if !ok {
+				continue
 			}
+			n, err := strconv.ParseInt(port, 16, 32)
+			if err != nil || int(n) != ep.Port || procIP(host) != ep.Address {
+				continue
+			}
+			return true, nil
 		}
 	}
-	return false
+	if !observed {
+		return false, fmt.Errorf("no socket table could be read")
+	}
+	return false, nil
 }
 func detach(cmd *exec.Cmd)                       { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 func reservePort(ep endpoint) (netCloser, error) { return net.Listen("tcp", ep.address()) }

@@ -98,10 +98,29 @@ func failureEnvelope(command, scope string, err error) platform.Envelope {
 // managed-scope identity (Linux, matching account) before anything runs.
 func requiresMutation(command []string) bool {
 	switch command[0] {
-	case "select", "mode", "provider", "subscription", "manual", "override", "health-check":
+	case "select", "mode", "provider", "manual", "override", "health-check":
 		return true
+	case "subscription":
+		// Only the apply half changes the managed configuration; the preview
+		// half is a previewFlow and never recovers.
+		return len(command) > 1 && command[1] == "apply"
 	case "controller":
 		return len(command) == 2 && (command[1] == "setup" || command[1] == "initialize" || command[1] == "token")
+	}
+	return false
+}
+
+// previewFlow reports whether a routing command only DESCRIBES a change. A
+// preview never replays a recovery journal: it refuses a pending recovery
+// instead, so the live configuration it reads is never replaced underneath it
+// by a recovery the caller did not ask for. The refusal leaves the journal for
+// the next authorized mutation, which is the only thing allowed to replay it.
+func previewFlow(command []string, r platform.Request) bool {
+	switch command[0] {
+	case "subscription":
+		return len(command) < 2 || command[1] == "preview"
+	case "manual", "override", "health-check":
+		return !r.Has("apply")
 	}
 	return false
 }
@@ -127,7 +146,19 @@ func Run(ctx context.Context, a platform.App, r platform.Request) (platform.Enve
 	command := r.Command
 	scope := scopeLabel(a.Scope.System)
 	name := command[0]
-	if requiresMutation(command) {
+	switch {
+	case previewFlow(command, r):
+		// A preview is read-only with respect to the live configuration. It
+		// refuses a pending recovery instead of replaying it: recovering here
+		// would change the configuration the preview describes, and the caller
+		// asked for a description, not for a repair.
+		if err := a.Scope.RequireMutation(); err != nil {
+			return failureEnvelope(name, scope, err), nil
+		}
+		if err := platform.CheckPending(a.Scope); err != nil {
+			return failureEnvelope(name, scope, err), nil
+		}
+	case requiresMutation(command):
 		if err := a.Scope.RequireMutation(); err != nil {
 			return failureEnvelope(name, scope, err), nil
 		}

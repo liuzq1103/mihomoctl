@@ -72,6 +72,12 @@ instructions, the command parity matrix and acceptance record accompany bundles.
 All previews, including program install/uninstall and service uninstall dry runs,
 are read-only. They refuse pending recovery instead of replaying journals. A real
 mutation or explicit `installation recover` performs recovery under the scope lock.
+The same holds for every other preview of the managed configuration: the
+subscription preview, in the command line and in the guided console alike, only
+describes a change. It refuses a pending recovery instead of replaying it,
+because replaying a journal would replace the very configuration the preview
+describes. The scope lock a preview takes does not recover; only an authorized
+mutation, or an explicit `installation recover`, replays a journal.
 An existing foreign launcher is never adopted, replaced or deleted; choose a
 different `--bin-dir` when another project owns the command there.
 
@@ -145,9 +151,16 @@ can never be completed: the receipt binds the exact launcher object, and that
 object was released together with the staging directory, so a replacement
 carrying identical bytes would be a different object and would break the
 binding. Recovery rolls that publication back instead of refusing every later
-command: it removes the published install root, the staged launcher and the
-journal, and reports `bootstrap-launcher-source-missing`. The installation has
-to be run again; nothing outside the journal's own objects is touched.
+command: it renames the published install root out of the way, removes it and
+the staged launcher, discards the journal, and reports
+`bootstrap-launcher-source-missing`. The installation has to be run again;
+nothing outside the journal's own objects is touched. The rollback removes the
+journaled objects one by one, each of them only after its recorded identity
+still matches. An object the journal never recorded is foreign: it is not
+removed, the private abandoned directory keeps it, and the scope stays usable.
+The rename is atomic, so an interrupted rollback leaves the root under
+`<data-root>/.install-abandoned-<token>` — a private directory the next
+recovery removes; it is never adopted and never guessed away.
 
 CI runs race/vet/full-package tests and product CLI/bundle smoke on Ubuntu 22.04
 and 24.04, both architectures on native hardware (the arm64 gate uses GitHub's

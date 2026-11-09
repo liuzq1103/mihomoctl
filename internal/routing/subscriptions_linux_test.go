@@ -90,19 +90,82 @@ func legacyOf(t *testing.T, envelope platform.Envelope) map[string]any {
 	return legacy
 }
 
-// TestLinuxExportRecoversBeforeSnapshot pins the recover-before-snapshot
-// contract of the shared recovery protocol: an exported mutation entry must
-// replay abandoned journals BEFORE its first configuration read, so the
-// guided decision describes the recovered state, not the crashed candidate a
-// pending journal is about to roll back. Without this ordering the snapshot
-// is stale the moment recovery restores the file, and a later stale-before
-// recheck refuses a perfectly valid edit of the recovered state.
-func TestLinuxExportRecoversBeforeSnapshot(t *testing.T) {
+// A preview describes a change; it never performs one. Replaying a recovery
+// journal while previewing would replace the live configuration the preview
+// describes, so a preview refuses a pending recovery instead and leaves the
+// journal for the next authorized mutation.
+func TestLinuxPreviewRefusesPendingRecovery(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("user-scope mutation gate refuses root")
 	}
 	a, configPath := subscriptionScope(t, linuxFreshConfig, "/usr/bin/true")
 	// Crash mid-transaction: the routed candidate was published over the
+	// fresh configuration and its journal is still pending.
+	tx, err := beginFileTransaction(a.Scope, "test-pending", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(configPath, []byte(linuxRoutedConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	subscription := writeSubscriptionFile(t, linuxNodeSubscription)
+
+	// The guided preview refuses and leaves everything untouched.
+	envelope, err := SubscriptionInput(context.Background(), a, subscription, "file", "simple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Overall != "UNVERIFIED" || len(envelope.Errors) != 1 || envelope.Errors[0].Code != "transaction-recovery-required" {
+		t.Fatalf("the guided preview did not refuse the pending recovery: %+v", envelope)
+	}
+	if current := readTxFile(t, configPath); current != linuxRoutedConfig {
+		t.Fatalf("the preview changed the live configuration:\n%s", current)
+	}
+	if entries := backupsEntries(t, a.Scope); len(entries) != 1 {
+		t.Fatalf("the preview replayed the recovery journal: %v", entries)
+	}
+	if files := stagedFiles(t, a); len(files) != 0 {
+		t.Fatalf("the preview staged a plan: %v", files)
+	}
+
+	// The command-line preview refuses the same way.
+	preview := RunRequest(t, a, []string{"subscription", "preview"}, map[string]string{"source-file": subscription})
+	if preview.Overall != "UNVERIFIED" || len(preview.Errors) != 1 || preview.Errors[0].Code != "transaction-recovery-required" {
+		t.Fatalf("the command-line preview did not refuse the pending recovery: %+v", preview)
+	}
+	if current := readTxFile(t, configPath); current != linuxRoutedConfig {
+		t.Fatalf("the command-line preview changed the live configuration:\n%s", current)
+	}
+	if entries := backupsEntries(t, a.Scope); len(entries) != 1 {
+		t.Fatalf("the command-line preview replayed the recovery journal: %v", entries)
+	}
+}
+
+// A mutation is allowed to replay a pending journal, and it has to do so
+// before its first configuration read: the plan it validates must describe
+// the recovered state, not the crashed candidate a journal is about to roll
+// back. Without this ordering the snapshot is stale the moment recovery
+// restores the file, and a later stale-before recheck refuses a perfectly
+// valid edit of the recovered state.
+func TestLinuxApplyRecoversBeforeSnapshot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("user-scope mutation gate refuses root")
+	}
+	a, configPath := subscriptionScope(t, linuxFreshConfig, "/usr/bin/true")
+	envelope, err := SubscriptionInput(context.Background(), a, writeSubscriptionFile(t, linuxNodeSubscription), "file", "simple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Overall != "PASS" {
+		t.Fatalf("overall = %s errors = %v", envelope.Overall, envelope.Errors)
+	}
+	legacy := legacyOf(t, envelope)
+	identifier, _ := legacy["id"].(string)
+	digest, _ := legacy["sha256"].(string)
+	if identifier == "" || digest == "" {
+		t.Fatalf("the preview produced no plan: %v", legacy)
+	}
+	// Crash after the preview: the routed candidate was published over the
 	// fresh configuration and its journal is still pending.
 	tx, err := beginFileTransaction(a.Scope, "test-stale", false)
 	if err != nil {
@@ -111,25 +174,17 @@ func TestLinuxExportRecoversBeforeSnapshot(t *testing.T) {
 	if err := tx.writeBytes(configPath, []byte(linuxRoutedConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if current := readTxFile(t, configPath); current != linuxRoutedConfig {
-		t.Fatalf("crash staging failed: %q", current)
-	}
 
-	envelope, err := SubscriptionInput(context.Background(), a, writeSubscriptionFile(t, linuxNodeSubscription), "file", "simple")
+	applied := RunRequest(t, a, []string{"subscription", "apply"}, map[string]string{"sha256": digest}, identifier)
+	if applied.Overall != "PASS" {
+		t.Fatalf("apply overall = %s errors = %v", applied.Overall, applied.Errors)
+	}
+	committed, err := platform.ReadPrivate(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Overall != "PASS" {
-		t.Fatalf("subscription input = %s %v", envelope.Overall, envelope.Errors)
-	}
-	legacy := legacyOf(t, envelope)
-	if legacy["guided"] != true {
-		t.Fatalf("guided decision taken on a stale snapshot: guided = %v", legacy["guided"])
-	}
-	// Recovery genuinely ran before the snapshot: the crashed publication
-	// is rolled back to the fresh configuration.
-	if current := readTxFile(t, configPath); current != linuxFreshConfig {
-		t.Fatalf("configuration not recovered before the snapshot:\n%s", current)
+	if hashSHA256(committed) != digest {
+		t.Fatal("the applied configuration does not match the reviewed digest")
 	}
 	if entries := backupsEntries(t, a.Scope); len(entries) != 0 {
 		t.Fatalf("recovery retained journals: %v", entries)

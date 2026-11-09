@@ -419,10 +419,22 @@ func (s *subscriptions) root() string {
 // directory ensures the private staging root exists and drops material older
 // than 24 hours. Foreign or drifted files are never cleanup targets.
 func (s *subscriptions) directory(ctx context.Context) error {
+	return s.stageDirectory(ctx, false)
+}
+
+// stageDirectory prepares the private staging root. A preview takes the scope
+// lock without replaying recovery journals: the cleanup touches the private
+// staging area only, and a preview must not change the live configuration.
+// The staging root is prepared before the lock, exactly as before.
+func (s *subscriptions) stageDirectory(ctx context.Context, preview bool) error {
 	if err := platform.PrivateDir(s.root()); err != nil {
 		return controllerFileError(err)
 	}
-	return platform.WithLock(ctx, s.a.Scope, func() error {
+	lock := platform.WithLock
+	if preview {
+		lock = platform.WithPreviewLock
+	}
+	return lock(ctx, s.a.Scope, func() error {
 		entries, err := os.ReadDir(s.root())
 		if err != nil {
 			return controllerFileError(err)
@@ -643,6 +655,9 @@ func (s *subscriptions) preview(ctx context.Context, sourceFile, urlFile string,
 
 // previewRaw stages an already-private raw subscription document. It is the
 // shared locked half behind the CLI sources and the TUI subscription input.
+// It is a preview: it never changes the live configuration and never replays
+// a recovery journal. A pending recovery is refused, leaving the journal for
+// the next authorized mutation.
 func (s *subscriptions) previewRaw(ctx context.Context, raw []byte, policy, requestedPolicy string, guided bool) (map[string]any, error) {
 	if policy != "auto" && policy != "nodes" && policy != "provider" && policy != "policy" {
 		return nil, control("subscription-policy-invalid", exitFail)
@@ -650,7 +665,7 @@ func (s *subscriptions) previewRaw(ctx context.Context, raw []byte, policy, requ
 	if len(raw) == 0 || len(raw) > limit {
 		return nil, control("subscription-size-invalid", exitFail)
 	}
-	if err := s.directory(ctx); err != nil {
+	if err := s.stageDirectory(ctx, true); err != nil {
 		return nil, err
 	}
 	identifierBytes := make([]byte, 16)
@@ -659,7 +674,7 @@ func (s *subscriptions) previewRaw(ctx context.Context, raw []byte, policy, requ
 	}
 	identifier := hex.EncodeToString(identifierBytes)
 	var payload map[string]any
-	err := platform.WithLock(ctx, s.a.Scope, func() error {
+	err := platform.WithPreviewLock(ctx, s.a.Scope, func() error {
 		var stageErr error
 		payload, stageErr = s.stage(ctx, raw, policy, requestedPolicy, identifier, guided)
 		if stageErr != nil {

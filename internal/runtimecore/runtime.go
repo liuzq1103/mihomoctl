@@ -441,11 +441,11 @@ func commitArtifact(a platform.App, p, tmp string, remove bool) error {
 	if err := os.Rename(tmp, p); err != nil {
 		return err
 	}
-	if d, e := os.Open(filepath.Dir(p)); e == nil {
-		_ = d.Sync()
-		d.Close()
-	}
-	return nil
+	// A rename is only durable once the directory entry itself is flushed.
+	// The failure is reported: a publication that cannot confirm its
+	// durability must not be reported as a success, and the journal that
+	// describes it must not be discarded.
+	return syncDirectory(filepath.Dir(p))
 }
 
 // restoreFiles publishes the recorded original bytes. A rollback publishes a

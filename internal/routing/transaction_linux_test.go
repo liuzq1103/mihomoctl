@@ -269,6 +269,53 @@ func TestLinuxRollbackRefusesForeignFIFO(t *testing.T) {
 	}
 }
 
+// TestLinuxRollbackRefusesReplacedBackupBeforeAnyUndo pins the backup
+// preflight. The undo runs in reverse, so the earlier backup is read last: a
+// backup that was replaced after the crash must fail the whole rollback
+// BEFORE the first undo, not after the later file was already restored. A
+// rollback that restored one file and then failed would leave a mixed
+// old/new configuration behind with the journal retained.
+func TestLinuxRollbackRefusesReplacedBackupBeforeAnyUndo(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("user-scope mutation gate refuses root")
+	}
+	scope := txScope(t)
+	primary := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	secondary := filepath.Join(scope.DataRoot, "extra", "second.yaml")
+	writeTxFile(t, primary, "original", 0600)
+	writeTxFile(t, secondary, "second original", 0600)
+	tx, err := beginFileTransaction(scope, "test-backup", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(primary, []byte("published primary"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(secondary, []byte("published secondary"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The backup of the FIRST file is replaced after the crash.
+	first := tx.journal[0]
+	if first.Backup == "" || first.BackupSHA256 == "" {
+		t.Fatal("the first record has no backup")
+	}
+	if err := os.WriteFile(first.Backup, []byte("replaced"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mustCode(t, recoverTransactions(scope, false), "rollback-failed")
+	// Nothing was undone: the later file still holds its published bytes.
+	if readTxFile(t, secondary) != "published secondary" {
+		t.Fatal("the rollback restored a file before the replaced backup was detected")
+	}
+	if readTxFile(t, primary) != "published primary" {
+		t.Fatal("the rollback restored the file whose backup was replaced")
+	}
+	if entries := backupsEntries(t, scope); len(entries) == 0 {
+		t.Fatal("the refused rollback dropped the journal")
+	}
+}
+
 // TestLinuxRollbackFailureRetainsJournal is the worst-case fault injection:
 // the hook fails after publication AND the rollback cannot restore (its
 // backup vanished). The error must be the distinct rollback-failed code with

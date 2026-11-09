@@ -225,7 +225,14 @@ func healthResolved(ctx context.Context, a platform.App, x resolved, known *iden
 		evidence, detail := "inferred", ep.address()+" listening (uid ownership confirmed)"
 		if !owned {
 			evidence, detail = "unavailable", ep.address()+" listening (uid ownership unverified)"
-			if !listenerPresent(ep) {
+			// A socket table that could not be read leaves the endpoint state
+			// unknown. Confirming "not listening" there would be a claim
+			// nobody observed, so the evidence stays unavailable.
+			present, err := listenerPresent(ep)
+			switch {
+			case err != nil:
+				evidence, detail = "unavailable", ep.address()+" listener state unavailable"
+			case !present:
 				evidence, detail = "confirmed", ep.address()+" not listening"
 			}
 		}

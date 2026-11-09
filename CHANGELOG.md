@@ -18,12 +18,18 @@
   replacement carrying identical bytes is a different object; the recovery
   rolls that publication back, removing the published root and the journal,
   instead of retaining a half-installed program that no command can roll back
-  or clear.
+  or clear. The rollback renames the published root out of the way before it
+  removes it, so an interrupted rollback leaves a private directory the next
+  recovery finishes, never a partly removed tree at the published path that
+  would fail the inventory check for good.
 
 - Full program uninstall now quarantines the receipt-bound installation atomically,
   journals exact file ownership outside the program root, and resumes interrupted
-  deletion without touching replacement installations. Every journalled object is
-  bound by device and inode as well as content hash, and the launcher is bound by
+  deletion without touching replacement installations. The removal journal is
+  flushed to disk before the program root is renamed into the quarantine, so a
+  power loss can never leave a quarantined tree behind without the journal that
+  describes it. Every journalled object is bound by device and inode as well as
+  content hash, and the launcher is bound by
   identity too, so a replacement file carrying identical bytes is refused instead
   of being deleted as program-owned. It is idempotent and permits
   reinstall. Corrupt status fails; only true absence reports not-installed.
@@ -35,6 +41,30 @@
   device and inode, so a launcher replaced by a file carrying identical bytes is
   a foreign object: the uninstall refuses it (`uninstall-launcher-drift`) and the
   installation status no longer reports it as valid.
+
+- A preview never replays a recovery journal. The subscription preview — the
+  command-line one and the guided console input alike — refuses a pending
+  recovery instead of replaying it, exactly as a dry run does, and the scope lock
+  it takes does not recover: replaying a journal would replace the live
+  configuration the preview describes, and a description is not a repair. Only an
+  authorized mutation, or an explicit `installation recover`, replays a journal.
+  The apply path still recovers before its first configuration read, so a plan
+  is always validated against the state it describes.
+
+- An abandoned publication removes only the objects its journal inventoried.
+  The interrupted rollback — the private `.install-abandoned-<token>` tree — is
+  resumed object by object, and an object the journal never recorded is
+  foreign: it survives the removal, the private directory keeps it, and the
+  scope stays usable instead of being wedged by a refusal.
+
+- The rollback checks every backup before it undoes anything. A backup that was
+  replaced after the crash fails the whole rollback before the first restore,
+  so a transaction can no longer restore one file and then fail on another and
+  leave a mixed old/new configuration behind with the journal retained.
+
+- A health check that cannot read the socket table reports the listener state as
+  unavailable. It never reports a confirmed "not listening" for an observation
+  that was never made.
 
 - Configuration file transactions preflight the type of every journalled
   destination before the first undo. A path replaced by a directory, FIFO, socket
@@ -72,6 +102,11 @@
   identity as well as by content. A replacement that carries identical bytes is
   a different object and is refused (`transaction-conflict`,
   `compound-file-conflict`) instead of being adopted as the managed file.
+
+- A publication is only reported as successful once the directory entry that
+  carries it has been flushed. A directory that cannot be flushed is reported
+  as a failure instead of being ignored, so a write that cannot confirm its
+  durability never discards the journal that describes it.
 
 - An option value that looks like an option is refused, exactly as the
   reference implementation refuses it. A lone `-` and a negative number are

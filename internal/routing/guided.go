@@ -208,10 +208,11 @@ func SubscriptionInput(ctx context.Context, a platform.App, value, kind, policy 
 	if err := a.Scope.RequireMutation(); err != nil {
 		return failureEnvelope(command, scope, err), nil
 	}
-	// Recover every module's journals before the first configuration read:
-	// the guided-shape snapshot below must describe the recovered state, not
-	// a crashed candidate a pending journal is about to roll back.
-	if err := recoverBeforeSnapshot(ctx, a.Scope); err != nil {
+	// A guided preview is a preview: it describes a candidate and never
+	// changes the live configuration. A pending recovery is refused instead
+	// of replayed — replaying it here would replace the configuration this
+	// preview describes, and only an authorized mutation may do that.
+	if err := platform.CheckPending(a.Scope); err != nil {
 		return failureEnvelope(command, scope, err), nil
 	}
 	if kind == "" {

@@ -258,6 +258,7 @@ func TestRecoveryCanItselfBeInterruptedRepeatedly(t *testing.T) {
 		})
 	}
 }
+
 // The compound journal binds the objects it published. A replacement file
 // that carries identical bytes is a different object, so the recovery refuses
 // it instead of undoing it as if it were the operation's own file.

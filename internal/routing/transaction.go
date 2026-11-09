@@ -422,6 +422,19 @@ func (t *fileTransaction) commit() error {
 // failure to fully restore is a distinct rollback failure and the journal is
 // retained for inspection.
 func (t *fileTransaction) rollback(finish bool) error {
+	// The backups are checked before the first undo. The undo runs in reverse
+	// order, so an earlier backup is read last: a backup that was replaced
+	// after the crash would otherwise be discovered only after the later
+	// files were already restored, leaving a mixed old/new configuration
+	// behind with the journal retained. Refusing before anything is undone
+	// keeps the configuration uniform.
+	if err := t.verifyBackups(); err != nil {
+		return &controlError{
+			code:       "rollback-failed",
+			rc:         exitUnverify,
+			safeDetail: "could not restore: " + err.Error() + "; unfinished transaction retained",
+		}
+	}
 	var failures []string
 	for i := len(t.journal) - 1; i >= 0; i-- {
 		record := &t.journal[i]
@@ -445,6 +458,45 @@ func (t *fileTransaction) rollback(finish bool) error {
 	if finish {
 		t.finished = true
 		t.cleanup()
+	}
+	return nil
+}
+
+// verifyBackups checks every backup the rollback would read, before the first
+// undo. The digest recorded when the backup was written is the only proof
+// that the backup still carries the bytes this transaction captured: a backup
+// replaced after the crash is refused, and refusing it up front keeps the
+// rollback from restoring some records and then failing on another, which
+// would leave the configuration half old and half new.
+func (t *fileTransaction) verifyBackups() error {
+	for i := len(t.journal) - 1; i >= 0; i-- {
+		record := &t.journal[i]
+		if record.Op == "publish" && record.Created {
+			// Nothing was there before; the undo removes what was created
+			// and reads no backup.
+			continue
+		}
+		if record.Type == "symlink" {
+			// The target lives in the record; there is no backup file.
+			continue
+		}
+		if record.Backup == "" || record.BackupSHA256 == "" {
+			continue
+		}
+		if record.RestoredObject != "" {
+			if object, err := txObjectIdentity(record.Path); err == nil && object == record.RestoredObject {
+				// The restore already ran and published its own object: the
+				// backup is not read again, so it is not checked either.
+				continue
+			}
+		}
+		data, err := os.ReadFile(record.Backup)
+		if err != nil {
+			return fmt.Errorf("%s (%v)", record.Path, err)
+		}
+		if hashSHA256(data) != record.BackupSHA256 {
+			return fmt.Errorf("%s (backup replaced after the crash)", record.Path)
+		}
 	}
 	return nil
 }
