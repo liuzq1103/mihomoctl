@@ -136,8 +136,6 @@ func run() error {
 			if e != nil {
 				return e
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-			defer cancel()
 			input := filepath.Join(stage, plan.Asset)
 			if *cache != "" {
 				input = filepath.Join(*cache, plan.Asset)
@@ -145,10 +143,32 @@ func run() error {
 					input = filepath.Join(*cache, "mihomo-linux-"+arch+".gz")
 				}
 			} else {
-				if e = (delivery.Downloader{}).Download(ctx, plan.URL, input, plan.SHA256); e != nil {
+				// GitHub's release CDN intermittently answers a runner's GET
+				// with a transient non-200 or an aborted transfer even though
+				// the asset is healthy, which would fail a whole CI matrix
+				// attempt. Retry only those transient conditions; every
+				// attempt is a complete fresh transfer that must still match
+				// the reviewed digest, so retrying cannot weaken the pin.
+				transient := map[string]bool{"download-http-status": true, "download-unavailable": true, "download-incomplete": true}
+				for attempt := 1; ; attempt++ {
+					dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Minute)
+					e = (delivery.Downloader{}).Download(dctx, plan.URL, input, plan.SHA256)
+					dcancel()
+					if e == nil || !transient[e.Error()] {
+						break
+					}
+					if attempt >= 5 {
+						return e
+					}
+					fmt.Fprintf(os.Stderr, "release: core download attempt %d failed (%v); retrying\n", attempt, e)
+					time.Sleep(time.Duration(attempt) * 15 * time.Second)
+				}
+				if e != nil {
 					return e
 				}
 			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
 			if e = delivery.PrepareCoreFromFile(ctx, plan, arch, filepath.Join(root, "core", "mihomo"), input); e != nil {
 				return e
 			}
