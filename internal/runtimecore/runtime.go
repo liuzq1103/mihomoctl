@@ -230,15 +230,18 @@ func journalPath(a platform.App) string {
 // applyFiles journals original bytes before publication. A crashed multi-file
 // write is restored under the operation lock before another mutation can run.
 func applyFiles(a platform.App, files map[string][]byte) error {
-	_, e := applyFilesBinding(a, files, nil)
+	_, e := applyFilesBinding(a, files)
 	return e
 }
 
 // applyFilesBinding publishes the files and reports the identity of every
-// object it published, so a journal that outlives this transaction can bind
-// them. The bound callback runs after the publication and before the
-// transaction journal is removed.
-func applyFilesBinding(a platform.App, files map[string][]byte, bound func(map[string]string) error) (map[string]string, error) {
+// object it published. The compound journal outlives this transaction, so the
+// objects are bound into it before the transaction journal is removed: the
+// compound journal is the record that still names them once the transaction
+// journal is gone. The binding runs for every transaction, not only for the
+// compound ones, because a compound operation publishes files through
+// transactions of its own.
+func applyFilesBinding(a platform.App, files map[string][]byte) (map[string]string, error) {
 	published := map[string]string{}
 	if e := platform.CheckPath(journalPath(a)); e != nil {
 		return nil, e
@@ -294,6 +297,12 @@ func applyFilesBinding(a platform.App, files map[string][]byte, bound func(map[s
 		}
 		j.Files = append(j.Files, v)
 	}
+	// The compound journal names the objects this operation replaced, the file
+	// transaction journal names the objects it is about to publish. Neither
+	// names the object that will stand at the path until the publication is
+	// recorded, so a crash in this window leaves a foreign replacement at the
+	// path indistinguishable from the operation's own file.
+	compoundCheckpoint("files-prepared")
 	if e := persistTransaction(a, j); e != nil {
 		return nil, e
 	}
@@ -308,24 +317,28 @@ func applyFilesBinding(a platform.App, files map[string][]byte, bound func(map[s
 			return nil, e
 		}
 	}
+	// The publication is done, the compound journal does not name the published
+	// objects yet. A crash in this window leaves the compound journal with only
+	// the objects it replaced, and the recovery has to tell the published
+	// objects from foreign replacements that carry identical bytes.
+	compoundCheckpoint("files-publishing")
 	for _, f := range j.Files {
 		if object := f.PublishedObject; object != "" {
 			published[f.Path] = object
 		}
 	}
 	// A journal that outlives this transaction has to name the objects this
-	// transaction published. The callback runs while the transaction journal
-	// still names them, so no window leaves the published objects unnamed.
-	if bound != nil {
-		if e := bound(published); e != nil {
-			if r := restoreFiles(a, j); r != nil {
-				return nil, platform.Fail("rollback-failed")
-			}
-			if r := durableRemove(journalPath(a)); r != nil {
-				return nil, platform.Fail("transaction-journal-unavailable")
-			}
-			return nil, e
+	// transaction published. The binding runs while the transaction journal
+	// still names them, so no window leaves the published objects unnamed, and
+	// it runs before the transaction journal is removed.
+	if e := bindPublishedObjects(a, published); e != nil {
+		if r := restoreFiles(a, j); r != nil {
+			return nil, platform.Fail("rollback-failed")
 		}
+		if r := durableRemove(journalPath(a)); r != nil {
+			return nil, platform.Fail("transaction-journal-unavailable")
+		}
+		return nil, e
 	}
 	if e := durableRemove(journalPath(a)); e != nil {
 		if r := restoreFiles(a, j); r != nil {
@@ -477,6 +490,14 @@ func restoreFiles(a platform.App, j journal) error {
 		f.RestoredObject = object
 		j.Files[i] = f
 		if e := persistTransaction(a, j); e != nil {
+			_ = os.Remove(temporary)
+			return e
+		}
+		// The compound journal outlives this transaction, so it names the object
+		// the rollback publishes before the rename: a recovery that finds the
+		// restored object at the path recognizes its own work instead of
+		// refusing the operation forever.
+		if e := bindRestoredObject(a, f.Path, object); e != nil {
 			_ = os.Remove(temporary)
 			return e
 		}

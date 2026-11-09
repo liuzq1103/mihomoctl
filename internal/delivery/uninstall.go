@@ -554,6 +554,11 @@ func recoverUninstallWithHooks(a platform.App, hooks uninstallHooks) error {
 			return e
 		}
 	}
+	// The installation is gone, so the record that named its launcher has no
+	// installation to describe any more.
+	if e = removeInstallationRecord(a); e != nil {
+		return e
+	}
 	checkpoint := func(phase string) error {
 		if hooks.checkpoint != nil {
 			return hooks.checkpoint(phase)
@@ -661,6 +666,19 @@ func uninstallLocked(a platform.App, dry bool, hooks uninstallHooks) (map[string
 	if !exists {
 		result := notInstalled()
 		result["dry_run"], result["changed"] = dry, false
+		if !dry {
+			// The program root is gone. The launcher this installation
+			// published can still stand at the path it was published to, and
+			// it can only fail now: the root it points at is gone. The record
+			// outside that root names the object, so the launcher is removed
+			// by identity and the scope is left clean.
+			if removed, e := repairOrphanedInstallation(a); e != nil {
+				return nil, e
+			} else if removed != "" {
+				result["changed"] = true
+				result["removed"] = []string{removed}
+			}
+		}
 		return result, nil
 	}
 	if !dry {

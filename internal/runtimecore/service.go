@@ -44,6 +44,13 @@ func quoteUnit(s string) string {
 // separator stays between them. A quote, a tab or a line break cannot be
 // expressed at all, and such a path is refused instead of producing a unit
 // that cannot start (verified on systemd 249 and 255).
+//
+// A percent sign stays literal here, because systemd does not expand
+// specifiers in these settings: on systemd 249 and 255 a mount built from a
+// path that contains a percent sign resolves to that literal path, while a
+// doubled percent sign resolves to a directory named "%%" instead. The
+// settings that do expand specifiers are the command line settings, and
+// quoteUnit escapes the percent there.
 func systemdPathValue(p string) (string, error) {
 	if strings.ContainsAny(p, "\"\n\r\t") {
 		return "", platform.UsageDetail("config-invalid",

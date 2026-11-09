@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/liuzq1103/mihomoctl/internal/platform"
 )
 
 // TestSystemdPathValueQuotesOnlyWhatNeedsIt pins the rendering of a path
@@ -81,6 +83,50 @@ func TestSystemdUnitQuotesSpacedPaths(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestSystemdUnitKeepsPercentLiteralInPathLists pins the percent handling
+// of the generated unit. systemd expands specifiers in the command line
+// settings, and an unknown specifier makes the unit fail to load, so the
+// command line escapes a percent sign as "%%". The path-list settings do not
+// expand specifiers at all (verified on systemd 249 and 255: the mount source
+// is the literal path), so a percent sign in a managed path stays literal
+// there. Escaping it would point the mount at a directory named "%%".
+func TestSystemdUnitKeepsPercentLiteralInPathLists(t *testing.T) {
+	a, m := fixture(t)
+	a.Scope.System = true
+	m.Core.Backend = "systemd"
+	m.Core.Binary = filepath.Join(a.Scope.DataRoot, "cores", "100%", "mihomo")
+	unit, e := unitText(a, m)
+	if e != nil {
+		t.Fatal(e)
+	}
+	published, e := systemdPathValue(m.Core.Binary)
+	if e != nil {
+		t.Fatal(e)
+	}
+	staged, e := systemdPathValue(stagedServiceBinary(a))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(published, "100%") {
+		t.Fatalf("the rendered path lost its percent sign: %q", published)
+	}
+	if strings.Contains(published, "%%") {
+		t.Fatalf("the rendered path escaped its percent sign: %q", published)
+	}
+	if !strings.Contains(unit, "BindReadOnlyPaths="+staged+":"+published) {
+		t.Fatalf("unit does not carry the literal path:\n%s", unit)
+	}
+	// The command line expands specifiers, so the percent is escaped there.
+	if !strings.Contains(unit, "ExecStart="+quoteUnit(m.Core.Binary)) {
+		t.Fatalf("unit does not carry the escaped command line:\n%s", unit)
+	}
+}
+
+// stagedServiceBinary is the private copy of the core the unit binds.
+func stagedServiceBinary(a platform.App) string {
+	return filepath.Join(a.Scope.DataRoot, "service-binary", "mihomo")
 }
 
 // TestSystemdUnitRefusesUnrepresentablePath pins the refusal of a path

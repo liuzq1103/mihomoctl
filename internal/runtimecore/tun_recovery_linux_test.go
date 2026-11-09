@@ -13,6 +13,86 @@ import (
 	"github.com/liuzq1103/mihomoctl/internal/platform"
 )
 
+// A foreign object standing on a path the operation created is never deleted
+// either. Undoing the operation would remove that path, and a foreign
+// replacement that carries identical bytes is not the operation's own file:
+// the recovery refuses instead of deleting an object it does not own.
+func TestTunCompoundRecoveryRefusesForeignCreatedFile(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root-owned isolated files; no host service or network changes")
+	}
+	a, m := fixture(t)
+	a.Scope.System = true
+	a.Scope.Name = "system"
+	m.Core.Backend = "systemd"
+	m.Tun.Enabled = false
+	binary := m.Core.Binary
+	if e := platform.AtomicWrite(binary, []byte("root-owned recovery fixture"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	beforeManager, _ := marshalYAML(m)
+	beforeConfig := []byte("mode: rule\ntun:\n  enable: false\n")
+	for path, raw := range map[string][]byte{a.Scope.ManagerPath(): beforeManager, m.Core.Config: beforeConfig} {
+		if e := platform.AtomicWrite(path, raw, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	next := m
+	next.Tun.Enabled = true
+	nextManager, _ := marshalYAML(next)
+	receipt, _ := json.Marshal(tunReceipt{"mihomo0", 8, 0})
+	planned := map[string][]byte{a.Scope.ManagerPath(): nextManager, m.Core.Config: []byte("mode: direct\n"), tunReceiptPath(a): receipt}
+	original := &identity{PID: 123456, UID: 123, Start: "1", Boot: "previous-boot", Exe: binary, Args: []string{binary, "-d", serviceHome(a), "-f", serviceConfig(a, m)}}
+	c := &compoundRecord{Version: 2, Namespace: "mihomoctl-go", Scope: a.Scope, Operation: "tun-enable", Phase: "files-published", Before: m, Next: next, Original: original, Reload: true, BinaryHash: map[string]string{binary: platform.Hash([]byte("root-owned recovery fixture"))}}
+	for _, path := range sortedKeys(planned) {
+		f, e := snapshotCompoundFile(a, path, planned[path])
+		if e != nil {
+			t.Fatal(e)
+		}
+		c.Files = append(c.Files, f)
+	}
+	if e := writeCompound(a, c); e != nil {
+		t.Fatal(e)
+	}
+	if e := applyFiles(a, planned); e != nil {
+		t.Fatal(e)
+	}
+	// The receipt is a file this operation created; replace it with a foreign
+	// object that carries identical bytes.
+	created := tunReceiptPath(a)
+	raw, e := platform.ReadPrivate(created)
+	if e != nil {
+		t.Fatal(e)
+	}
+	foreign := created + ".foreign"
+	if e = platform.AtomicWrite(foreign, raw, 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Rename(foreign, created); e != nil {
+		t.Fatal(e)
+	}
+	bound, e := platform.ObjectIdentity(created)
+	if e != nil {
+		t.Fatal(e)
+	}
+	e = recoverCompoundWith(context.Background(), a, compoundRecoveryEffects{})
+	requireCode(t, e, "compound-file-conflict")
+	if _, e = os.Stat(compoundPath(a)); e != nil {
+		t.Fatal("refused recovery lost journal", e)
+	}
+	object, e := platform.ObjectIdentity(created)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if object != bound {
+		t.Fatalf("the foreign object was deleted: %s != %s", object, bound)
+	}
+	after, e := platform.ReadPrivate(created)
+	if e != nil || !bytesEqual(after, raw) {
+		t.Fatal("the foreign object was rewritten", e)
+	}
+}
+
 // These exercise the real persistent recovery engine and real root-owned file
 // permissions, with controlled systemd/kernel boundaries. They do not create
 // accounts, services, network devices, routes, or capabilities on the host.
@@ -63,7 +143,7 @@ func TestTunCompoundRecoveryBoundary(t *testing.T) {
 			}
 			planned := map[string][]byte{a.Scope.ManagerPath(): nextManager, m.Core.Config: []byte("mode: direct\n"), tunReceiptPath(a): receipt}
 			original := &identity{PID: 123456, UID: 123, Start: "1", Boot: "previous-boot", Exe: binary, Args: []string{binary, "-d", serviceHome(a), "-f", serviceConfig(a, m)}}
-			c := &compoundRecord{Version: 1, Namespace: "mihomoctl-go", Scope: a.Scope, Operation: operation, Phase: "files-published", Before: m, Next: next, Original: original, Reload: true, BinaryHash: map[string]string{binary: platform.Hash([]byte("root-owned recovery fixture"))}}
+			c := &compoundRecord{Version: 2, Namespace: "mihomoctl-go", Scope: a.Scope, Operation: operation, Phase: "files-published", Before: m, Next: next, Original: original, Reload: true, BinaryHash: map[string]string{binary: platform.Hash([]byte("root-owned recovery fixture"))}}
 			for _, path := range sortedKeys(planned) {
 				f, e := snapshotCompoundFile(a, path, planned[path])
 				if e != nil {

@@ -2,6 +2,44 @@
 
 ## 0.2.0 — 2026-11-10
 
+- The compound recovery keeps the proof of every object it published. A crash
+  between the file publication and the journal that binds it is closed: the
+  identities the file journal names are taken over into the compound journal
+  before the file journal is discarded, so discarding it can no longer destroy
+  the only record of what was published, and an interrupted recovery leaves a
+  journal that still tells a published object from a foreign replacement. The
+  identity check runs whenever the journal names an object at all, including
+  the one it replaced, so a foreign replacement carrying identical bytes is
+  refused (`compound-file-conflict`) instead of being overwritten or deleted
+  as if it were the operation's own file. The recovery never touches a foreign
+  object: a path whose recorded original content already stands on it —
+  whether the operation never reached it or an operator restored the bytes —
+  is left exactly as it stands, because there is nothing left to undo there.
+  A rollback publishes its restored objects into the compound journal before
+  the rename as well. Records written before this protocol bound objects stay
+  usable under the guarantee they were written with.
+
+- A lost install root no longer leaves a dead launcher behind. The receipt is
+  copied outside the program root when an installation is published, so an
+  installation whose root was deleted or lost still names its launcher:
+  `installation status` reports `orphaned` instead of `not-installed`, and a
+  later install or uninstall removes the leftover launcher by identity —
+  never a foreign replacement carrying identical bytes — instead of refusing
+  every later installation with `installation-command-exists`. An
+  installation that predates the copy gets one the next time the installer
+  sees it.
+
+- A percent sign in a managed core path is rendered correctly in the unit.
+  The path-list settings (`TemporaryFileSystem=`, `BindPaths=`,
+  `BindReadOnlyPaths=`, `ReadWritePaths=`) keep it literal, because systemd
+  does not expand specifiers there (verified on systemd 249 and 255: the
+  mount resolves to the literal path, and a doubled percent sign would point
+  at a different directory), while the command line escapes it as `%%`,
+  because systemd expands specifiers there and an unknown one makes the unit
+  fail to load. The privileged acceptance now adopts a core that lives at a
+  path containing a percent sign and starts it, so both renderings are proven
+  against the real systemd of both supported releases.
+
 - First publication now uses a write-ahead journal: the staged tree, the launcher and
   the receipt are written and flushed before the install root is published, so a
   crash at any publication window leaves a recoverable record instead of a

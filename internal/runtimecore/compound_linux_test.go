@@ -146,7 +146,7 @@ func assertHealthy(t *testing.T, a platform.App) {
 	}
 }
 func TestAdoptionSIGKILLRecoveryAllPhases(t *testing.T) {
-	for _, phase := range []string{"prepared", "stopped", "files-published", "launch-recorded", "process-started-before-state", "activated", "committed"} {
+	for _, phase := range []string{"prepared", "stopped", "files-prepared", "files-publishing", "files-published", "launch-recorded", "process-started-before-state", "activated", "committed"} {
 		t.Run(phase, func(t *testing.T) {
 			a := initializedApp(t)
 			if _, e := Run(context.Background(), a, platform.Request{Command: []string{"start"}}); e != nil {
@@ -286,6 +286,123 @@ func TestCompoundRecoveryRefusesSameByteForeignReplacement(t *testing.T) {
 	if _, e = os.Stat(compoundPath(a)); e != nil {
 		t.Fatal("the recovery record was discarded", e)
 	}
+}
+
+// A crash between the publication and the binding leaves the compound
+// journal naming only the objects it replaced. The file transaction journal
+// is then the only record that names the published objects, and the recovery
+// has to take that record over before the file journal is discarded. A
+// foreign replacement that carries identical bytes is refused instead of
+// being overwritten as if it were the operation's own file.
+func TestCompoundRecoveryRefusesForeignReplacementAfterUnboundPublication(t *testing.T) {
+	a := initializedApp(t)
+	if _, e := Run(context.Background(), a, platform.Request{Command: []string{"start"}}); e != nil {
+		t.Fatal(e)
+	}
+	candidate := replacementCore(t, a)
+	// The publication is done, the compound journal does not name the
+	// published objects yet.
+	crashAt(t, crashSpec{App: a, Request: platform.Request{Command: []string{"core", "adopt"}, Options: map[string][]string{"path": {candidate}}}, Phase: "files-publishing"})
+	// The recovery is interrupted right after the file journal was discarded:
+	// the compound journal is the only record that is left.
+	crashAt(t, crashSpec{App: a, Recover: true, Phase: "transaction-discarded"})
+	managed := a.Scope.ManagerPath()
+	raw, e := platform.ReadPrivate(managed)
+	if e != nil {
+		t.Fatal(e)
+	}
+	foreign := managed + ".foreign"
+	if e = platform.AtomicWrite(foreign, raw, 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Rename(foreign, managed); e != nil {
+		t.Fatal(e)
+	}
+	bound, e := platform.ObjectIdentity(managed)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// The recovery has to refuse: the object at the path is not one the
+	// operation published.
+	_, e = Run(context.Background(), a, platform.Request{Command: []string{"start"}})
+	requireCode(t, e, "compound-file-conflict")
+	if _, e = os.Stat(compoundPath(a)); e != nil {
+		t.Fatal("the recovery record was discarded", e)
+	}
+	// The foreign object survives the refused recovery.
+	object, e := platform.ObjectIdentity(managed)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if object != bound {
+		t.Fatalf("the foreign object was replaced: %s != %s", object, bound)
+	}
+}
+
+// A crash before the file transaction records the objects it is about to
+// publish leaves the compound journal naming only the objects it replaced.
+// A foreign replacement that carries identical bytes is a different object,
+// and the recovery never touches a foreign object: it neither publishes over
+// it nor deletes it. Because the file already carries its recorded original
+// content there is nothing left to undo, so the recovery completes and leaves
+// the foreign object exactly as it stands.
+func TestCompoundRecoveryPreservesForeignReplacementBeforePublication(t *testing.T) {
+	a := initializedApp(t)
+	if _, e := Run(context.Background(), a, platform.Request{Command: []string{"start"}}); e != nil {
+		t.Fatal(e)
+	}
+	old, e := loadManager(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	candidate := replacementCore(t, a)
+	// Nothing is published yet: the compound journal names the objects the
+	// operation replaced.
+	crashAt(t, crashSpec{App: a, Request: platform.Request{Command: []string{"core", "adopt"}, Options: map[string][]string{"path": {candidate}}}, Phase: "files-prepared"})
+	managed := a.Scope.ManagerPath()
+	raw, e := platform.ReadPrivate(managed)
+	if e != nil {
+		t.Fatal(e)
+	}
+	foreign := managed + ".foreign"
+	if e = platform.AtomicWrite(foreign, raw, 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Rename(foreign, managed); e != nil {
+		t.Fatal(e)
+	}
+	bound, e := platform.ObjectIdentity(managed)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Run the recovery directly, the way the crash helper does: the point is
+	// what the recovery itself does to the foreign object, not what a later
+	// mutation republishes.
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	if e = platform.WithLock(ctx, a.Scope, func() error { return recoverCompound(ctx, a) }); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = os.Lstat(compoundPath(a)); !os.IsNotExist(e) {
+		t.Fatal("compound journal not durably cleared", e)
+	}
+	// The foreign object survives the completed recovery untouched.
+	object, e := platform.ObjectIdentity(managed)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if object != bound {
+		t.Fatalf("the foreign object was replaced: %s != %s", object, bound)
+	}
+	after, e := platform.ReadPrivate(managed)
+	if e != nil || !bytesEqual(after, raw) {
+		t.Fatal("the foreign object was rewritten", e)
+	}
+	m, e := loadManager(a)
+	if e != nil || m.Core.Binary != old.Core.Binary {
+		t.Fatal("the undone operation still points at its candidate", m, e)
+	}
+	assertHealthy(t, a)
 }
 
 func TestRecoveryRefusesForeignChangesAndPreservesJournal(t *testing.T) {

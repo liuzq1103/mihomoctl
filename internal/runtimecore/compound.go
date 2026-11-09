@@ -104,7 +104,7 @@ func loadCompound(a platform.App) (*compoundRecord, error) {
 		return nil, e
 	}
 	var c compoundRecord
-	if json.Unmarshal(raw, &c) != nil || c.Version != 1 || c.Namespace != "mihomoctl-go" || !samePersistentScope(c.Scope, a.Scope) || !member(c.Operation, "core-adopt", "reset", "tun-enable", "tun-disable", "configuration-start") || !member(c.Phase, "prepared", "stopped", "files-published", "activated", "restoring", "restoring-runtime", "committed") || len(c.Files) == 0 || len(c.Files) > 1024 || len(c.Launches) > 32 {
+	if json.Unmarshal(raw, &c) != nil || (c.Version != 1 && c.Version != 2) || c.Namespace != "mihomoctl-go" || !samePersistentScope(c.Scope, a.Scope) || !member(c.Operation, "core-adopt", "reset", "tun-enable", "tun-disable", "configuration-start") || !member(c.Phase, "prepared", "stopped", "files-published", "activated", "restoring", "restoring-runtime", "committed") || len(c.Files) == 0 || len(c.Files) > 1024 || len(c.Launches) > 32 {
 		return nil, platform.Usage("compound-journal-invalid")
 	}
 	if validateManager(a, c.Before) != nil || validateManager(a, c.Next) != nil {
@@ -198,22 +198,30 @@ func currentCompoundFile(a platform.App, f compoundFile) error {
 	} else if e != nil {
 		return e
 	}
+	raw, e := readManagedFile(a, f.Path)
+	if e != nil {
+		return e
+	}
 	// The journal binds the object this operation published and the object
 	// it replaced. A foreign replacement that carries identical bytes is a
 	// different object, so the recovery refuses it instead of undoing it as
-	// if it were the operation's own file.
-	if f.PublishedObject != "" || f.RestoredObject != "" {
+	// if it were the operation's own file. The check runs whenever the record
+	// names an object at all: a record that names only the object it replaced
+	// still proves that a different object at the path is foreign. The one
+	// foreign object the recovery accepts is one that already carries the
+	// recorded original content: there is nothing left to undo on that path,
+	// and the object is left exactly as it stands instead of being replaced.
+	if f.PrevObject != "" || f.PublishedObject != "" || f.RestoredObject != "" {
 		object, oe := platform.ObjectIdentity(f.Path)
 		if oe != nil {
 			return oe
 		}
 		if object != f.PublishedObject && object != f.PrevObject && object != f.RestoredObject {
-			return platform.Usage("compound-file-conflict")
+			if !f.Existed || !bytesEqual(raw, f.Before) {
+				return platform.Usage("compound-file-conflict")
+			}
+			return nil
 		}
-	}
-	raw, e := readManagedFile(a, f.Path)
-	if e != nil {
-		return e
 	}
 	if f.Existed && bytesEqual(raw, f.Before) {
 		return nil
@@ -333,7 +341,11 @@ func applyCompound(ctx context.Context, a platform.App, operation string, before
 	} else if c != nil {
 		return platform.Usage("compound-operation-pending")
 	}
-	c := &compoundRecord{Version: 1, Namespace: "mihomoctl-go", Scope: a.Scope, Operation: operation, Phase: "prepared", Before: before, Next: next, Original: original, BinaryHash: map[string]string{}}
+	// Version 2 records the objects the operation replaced, published and
+	// restored, and the recovery never touches an object the record does not
+	// name. Version 1 records predate that binding and keep the guarantee
+	// they were written with.
+	c := &compoundRecord{Version: 2, Namespace: "mihomoctl-go", Scope: a.Scope, Operation: operation, Phase: "prepared", Before: before, Next: next, Original: original, BinaryHash: map[string]string{}}
 	for _, m := range []manager{before, next} {
 		if _, exists := c.BinaryHash[m.Core.Binary]; exists {
 			continue
@@ -408,12 +420,7 @@ func applyCompound(ctx context.Context, a platform.App, operation string, before
 		if e := compoundPhase(a, "stopped"); e != nil {
 			return e
 		}
-		_, e := applyFilesBinding(a, files, func(published map[string]string) error {
-			// The compound journal outlives the file transaction, so it binds
-			// the objects that transaction published while the transaction
-			// journal still names them.
-			return bindPublishedObjects(a, published)
-		})
+		_, e := applyFilesBinding(a, files)
 		if e != nil {
 			return e
 		}
@@ -515,7 +522,8 @@ func prepareRestoredSystemFiles(ctx context.Context, a platform.App, m manager) 
 // transaction published. The compound journal outlives that transaction, so
 // it is the record that has to name them: a foreign replacement carrying
 // identical bytes is a different object and must not be undone as if it were
-// the operation's own file.
+// the operation's own file. A transaction that runs without a compound
+// operation in flight has nothing to bind.
 func bindPublishedObjects(a platform.App, published map[string]string) error {
 	if len(published) == 0 {
 		return nil
@@ -525,7 +533,7 @@ func bindPublishedObjects(a platform.App, published map[string]string) error {
 		return e
 	}
 	if c == nil {
-		return platform.Usage("compound-journal-missing")
+		return nil
 	}
 	changed := false
 	for i := range c.Files {
@@ -540,10 +548,81 @@ func bindPublishedObjects(a platform.App, published map[string]string) error {
 	return writeCompound(a, c)
 }
 
+// bindRestoredObject records in the compound journal the object a rollback is
+// about to publish at Path. The compound journal outlives the file
+// transaction, so it is the record that has to name the restored object
+// before the rename publishes it.
+func bindRestoredObject(a platform.App, path, object string) error {
+	if object == "" {
+		return nil
+	}
+	c, e := loadCompound(a)
+	if e != nil {
+		return e
+	}
+	if c == nil {
+		return nil
+	}
+	changed := false
+	for i := range c.Files {
+		if c.Files[i].Path == path && c.Files[i].RestoredObject != object {
+			c.Files[i].RestoredObject = object
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return writeCompound(a, c)
+}
+
+// adoptTransactionObjects copies the identities the pending file transaction
+// journal names into the compound journal. The file transaction writes its
+// journal before every rename, so it names the objects a publication created
+// even when the crash happened before the compound journal could be told
+// about them. The transfer happens before the file journal is discarded:
+// without it, discarding the file journal would destroy the only record of
+// the published objects and a later recovery could no longer tell them from
+// a foreign replacement that carries identical bytes.
+func adoptTransactionObjects(a platform.App, c *compoundRecord) error {
+	j, pending, e := loadTransaction(a)
+	if e != nil {
+		return e
+	}
+	if !pending {
+		return nil
+	}
+	changed := false
+	for i := range c.Files {
+		for _, tf := range j.Files {
+			if tf.Path != c.Files[i].Path {
+				continue
+			}
+			if tf.PublishedObject != "" && c.Files[i].PublishedObject != tf.PublishedObject {
+				c.Files[i].PublishedObject = tf.PublishedObject
+				changed = true
+			}
+			if tf.RestoredObject != "" && c.Files[i].RestoredObject != tf.RestoredObject {
+				c.Files[i].RestoredObject = tf.RestoredObject
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return writeCompound(a, c)
+}
+
 // restoreCompoundFile publishes the recorded original bytes. A restore
 // publishes a NEW object, so the compound journal names it before the rename:
 // a recovery interrupted between the restore and the journal removal
-// recognizes its own work instead of refusing the operation forever.
+// recognizes its own work instead of refusing the operation forever. A
+// foreign object is never touched: the only paths the recovery may publish
+// over or remove are the ones its journals name. A foreign object that
+// already carries the recorded original content is left exactly as it stands,
+// because there is nothing left to undo on that path; any other foreign
+// object stops the recovery.
 func restoreCompoundFile(a platform.App, index int) error {
 	c, e := loadCompound(a)
 	if e != nil {
@@ -553,6 +632,22 @@ func restoreCompoundFile(a platform.App, index int) error {
 		return platform.Usage("compound-journal-missing")
 	}
 	f := c.Files[index]
+	// Records written before this protocol bound objects keep the guarantee
+	// they were written with: a record from that era cannot tell its own
+	// objects from foreign ones, so it falls back to its content check alone.
+	if c.Version >= 2 {
+		if object, oe := platform.ObjectIdentity(f.Path); oe == nil &&
+			object != f.PublishedObject && object != f.PrevObject && object != f.RestoredObject {
+			if !f.Existed {
+				return platform.Usage("compound-file-conflict")
+			}
+			raw, re := readManagedFile(a, f.Path)
+			if re != nil || !bytesEqual(raw, f.Before) {
+				return platform.Usage("compound-file-conflict")
+			}
+			return nil
+		}
+	}
 	if !f.Existed {
 		// The file did not exist before the operation, so the recovery
 		// removes it instead of publishing an object.
@@ -593,6 +688,15 @@ func recoverCompoundWith(ctx context.Context, a platform.App, effects compoundRe
 	if c.Phase == "committed" {
 		return durableRemove(compoundPath(a))
 	}
+	// The file transaction journal names the objects its publication created.
+	// It is transferred into the compound journal before anything is verified
+	// and before the file journal is discarded, so the compound journal is
+	// never left without the objects it published: a recovery that finds a
+	// foreign replacement at a published path then refuses it instead of
+	// undoing it as if it were the operation's own file.
+	if e = adoptTransactionObjects(a, c); e != nil {
+		return e
+	}
 	// Verify every publication before stopping a process or changing files. A
 	// foreign edit, device, unit or PID leaves the recovery record intact.
 	for _, f := range c.Files {
@@ -613,10 +717,13 @@ func recoverCompoundWith(ctx context.Context, a platform.App, effects compoundRe
 	// recovery restores the same files itself, and every object it publishes
 	// is named in the compound journal. A transaction that published objects
 	// on its own would leave objects that no journal names, and the next
-	// recovery would refuse them as foreign.
+	// recovery would refuse them as foreign. The identities the file journal
+	// names were transferred into the compound journal above, so discarding it
+	// does not destroy the record of the published objects.
 	if e = discardTransaction(a); e != nil {
 		return e
 	}
+	compoundCheckpoint("transaction-discarded")
 	for i := len(c.Files) - 1; i >= 0; i-- {
 		if e = restoreCompoundFile(a, i); e != nil {
 			return e

@@ -324,6 +324,12 @@ func recoverBootstrapWithHooks(a platform.App, h bootstrapHooks) error {
 	if e = bootstrapCheckpoint(h, "staging-cleaned"); e != nil {
 		return e
 	}
+	// The copy of the receipt that lives outside the program root is written
+	// before the journal is removed, so an installation whose root is lost
+	// later still has a record that names its launcher.
+	if e = writeInstallationRecord(a, j.Receipt); e != nil {
+		return e
+	}
 	if e = os.Remove(bootstrapJournalPath(a)); e != nil {
 		return e
 	}
@@ -589,6 +595,15 @@ func bootstrap(ctx context.Context, a platform.App, source, binDir string, dry b
 		if exists, e := optionalExists(bin); e != nil {
 			return false, e
 		} else if exists {
+			// The command exists. It is the launcher of an installation whose
+			// program root was lost when the record outside that root names
+			// its object: that launcher can only fail, and the mutating path
+			// removes it by identity instead of refusing the installation.
+			if _, orphaned, e := installationOrphan(a); e != nil {
+				return false, e
+			} else if orphaned {
+				return false, nil
+			}
 			return false, fail("installation-command-exists")
 		}
 		return false, nil
@@ -610,7 +625,24 @@ func bootstrap(ctx context.Context, a platform.App, source, binDir string, dry b
 		}
 		if installed {
 			data["already_installed"], data["changed"] = true, false
+			// An installation that predates the record outside the program
+			// root gets one now, so a later loss of that root is still
+			// detectable and still repairable.
+			if rec, e := readReceipt(a); e == nil {
+				if e = writeInstallationRecord(a, rec); e != nil {
+					return e
+				}
+			}
 			return nil
+		}
+		// A launcher of a lost installation cannot work any more: the program
+		// root it points at is gone. The record outside that root names the
+		// object, so it is removed by identity and the scope is repaired
+		// before a new installation is published.
+		if removed, e := repairOrphanedInstallation(a); e != nil {
+			return e
+		} else if removed != "" {
+			data["repaired_orphan_launcher"] = removed
 		}
 		j, e := prepareBootstrap(a, source, bin, m)
 		if e != nil {

@@ -41,6 +41,21 @@ started=yes
 "$cli" --system update "$work/bundle" --allow-same-version --dry-run --json
 "$cli" --system service stop --json
 started=no
+# A percent sign in a managed path is literal in systemd's path-list settings:
+# systemd does not expand specifiers there (verified on systemd 249 and 255),
+# while it does expand them in the command line, where the unit escapes the
+# percent. A core that lives at such a path has to load and its mounts have to
+# resolve, on the systemd that runs this job.
+pctcore=/var/lib/mihomoctl-go/cores/100%/mihomo
+mkdir -p "$(dirname "$pctcore")"
+install -m 0700 "$core" "$pctcore"
+"$cli" --system core adopt --path "$pctcore" --json
+"$cli" --system service start --json
+started=yes
+"$cli" --system service status --json
+"$cli" --system health --json
+"$cli" --system service stop --json
+started=no
 "$cli" --system service uninstall --json
 "$cli" --system installation uninstall --json
 [ -f "$core" ]

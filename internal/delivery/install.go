@@ -502,6 +502,15 @@ func installationStatus(a platform.App) (map[string]any, error) {
 	if exists, e := optionalExists(installRoot(a)); e != nil {
 		return nil, e
 	} else if !exists {
+		// The program root is gone. The launcher this installation published
+		// can still stand at the path it was published to, and it can only
+		// fail now: the root it points at is gone. That is an orphaned
+		// installation, not an absent one, and it is reported as such.
+		if rec, orphaned, e := installationOrphan(a); e != nil {
+			return nil, e
+		} else if orphaned {
+			return map[string]any{"installed": false, "status": "orphaned", "recovery_required": true, "bin_path": rec.BinPath, "version": nil}, nil
+		}
 		return notInstalled(), nil
 	}
 	rec, e := readReceipt(a)

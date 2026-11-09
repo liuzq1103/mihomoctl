@@ -112,6 +112,21 @@ Repeated uninstall succeeds without deleting configuration or cores, and subsequ
 installation works. A bundle's native helper can recover even after its launcher
 has been removed. Use an external copy of the bundle to reinstall/recover.
 
+The receipt is also copied outside the program root, to
+`<state-root>/delivery-install.json`, when an installation is published. That
+copy is what outlives the program tree: the receipt inside the root is removed
+together with the root, but an installation whose install root was deleted or
+lost still names its launcher through the copy, so `installation status`
+reports `orphaned` with `recovery_required` instead of an absent installation,
+and the next install or uninstall removes the leftover launcher by the object
+the copy names. The launcher script is fully reproducible, so the copy names
+the launcher by device and inode exactly as the receipt does, and a
+replacement file carrying identical bytes is a foreign object that is never
+removed. An installation published before the copy existed receives one the
+next time the installer sees it. Removing the copy by hand is safe only
+together with the launcher it names, because the record is what tells that
+launcher from a fresh absence.
+
 A structurally invalid bootstrap journal is refused rather than guessed at: the
 journal is read back with `bootstrap-journal-invalid`, and because recovery is
 what reads it, that state blocks every later mutation and `installation recover`
