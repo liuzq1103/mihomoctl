@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -35,6 +36,27 @@ func TestNativeServiceRefusalsRemainEnvelopes(t *testing.T) {
 	b, _ := json.Marshal(env)
 	if strings.Contains(string(b), "private-token") {
 		t.Fatal("private argument disclosed")
+	}
+}
+
+func TestConsoleServiceAndCLIUseTheSameParserRefusal(t *testing.T) {
+	args := []string{"config", "validate", "--private-bad-option"}
+	p, err := command.Parse(args, nil, nil, nil)
+	if err == nil {
+		t.Fatal("parser accepted invalid option")
+	}
+	want := platform.Failure(p.Request.TopLevel(), "user", err)
+	got, err := newRealCli("").Run(args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, _ := json.Marshal(want)
+	right, _ := json.Marshal(got)
+	var leftValue, rightValue any
+	_ = json.Unmarshal(left, &leftValue)
+	_ = json.Unmarshal(right, &rightValue)
+	if !reflect.DeepEqual(leftValue, rightValue) {
+		t.Fatalf("CLI and TUI refusal differ: %s / %s", left, right)
 	}
 }
 func TestInProcessCapabilitiesImplemented(t *testing.T) {

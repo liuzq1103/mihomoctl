@@ -6,7 +6,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/liuzq1103/mihomoctl/internal/platform"
 )
@@ -209,6 +211,61 @@ func TestLinuxApplyPolicyRecoversAbandonedJournalBeforeRunning(t *testing.T) {
 	}
 	if entries := txBackups(t, a); len(entries) != 0 {
 		t.Fatalf("recovery left journals: %v", entries)
+	}
+}
+
+// TestLinuxRollbackRefusesForeignFIFO pins the type-drift refusal for every
+// non-regular replacement: after a crash, FIFOs sit where two journaled
+// destinations (one backed-up, one created by the transaction) used to hold
+// regular files. The refusal must come from Lstat alone — recovery may never
+// OPEN a FIFO, so with no writer on the other end the whole check still
+// completes — and both foreign objects stay exactly where they are, with the
+// journal retained for an operator.
+func TestLinuxRollbackRefusesForeignFIFO(t *testing.T) {
+	scope := txScope(t)
+	primary := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, primary, "original", 0600)
+	tx, err := beginFileTransaction(scope, "test-fifodrift", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(primary, []byte("published"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	secondary := filepath.Join(scope.DataRoot, "extra", "new.yaml")
+	if err := tx.writeBytes(secondary, []byte("created"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Crash, then private FIFOs replace both destinations.
+	for _, path := range []string{primary, secondary} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Mkfifo(path, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- recoverTransactions(scope, false) }()
+	var recovery error
+	select {
+	case recovery = <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("recovery blocked on a foreign FIFO: the type preflight must Lstat, never open")
+	}
+	mustCode(t, recovery, "rollback-failed")
+	for _, path := range []string{primary, secondary} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("foreign FIFO %s removed: %v", path, err)
+		}
+		if info.Mode()&os.ModeNamedPipe == 0 {
+			t.Fatalf("destination %s no longer a FIFO: %v", path, info.Mode())
+		}
+	}
+	if entries := backupsEntries(t, scope); len(entries) == 0 {
+		t.Fatal("refused rollback dropped the journal")
 	}
 }
 

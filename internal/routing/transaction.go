@@ -426,16 +426,23 @@ func (t *fileTransaction) undoRecord(record txRecord) (err error) {
 	path := record.Path
 	switch {
 	case record.Op == "publish" && record.Created:
-		if info, statErr := os.Lstat(path); statErr == nil {
-			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-				if err := os.RemoveAll(path); err != nil {
-					return err
-				}
-			} else if err := os.Remove(path); err != nil {
+		info, statErr := os.Lstat(path)
+		switch {
+		case os.IsNotExist(statErr):
+			// Nothing was left at the destination; just the created dirs.
+		case statErr != nil:
+			return statErr
+		case !info.Mode().IsRegular():
+			// Anything but the regular file this transaction created — a
+			// directory, FIFO, socket or device — is foreign post-crash
+			// state. Refuse: the rollback-failed path retains the journal
+			// for an operator instead of unlinking a foreign object and
+			// reporting a clean rollback.
+			return fmt.Errorf("created destination replaced by %s", fileTypeLabel(info.Mode()))
+		default:
+			if err := os.Remove(path); err != nil {
 				return err
 			}
-		} else if !os.IsNotExist(statErr) {
-			return statErr
 		}
 		for _, directory := range record.CreatedDirs {
 			if err := os.Remove(directory); err != nil && !os.IsNotExist(err) {
@@ -449,25 +456,59 @@ func (t *fileTransaction) undoRecord(record txRecord) (err error) {
 	return fmt.Errorf("unknown journal record")
 }
 
+// fileTypeLabel names what actually sits at a destination for rollback
+// failure details: only the type, never contents.
+func fileTypeLabel(mode os.FileMode) string {
+	switch {
+	case mode&os.ModeSymlink != 0:
+		return "a symlink"
+	case mode.IsDir():
+		return "a directory"
+	case mode&os.ModeNamedPipe != 0:
+		return "a FIFO"
+	case mode&os.ModeSocket != 0:
+		return "a socket"
+	case mode&os.ModeDevice != 0:
+		return "a device"
+	}
+	return "a non-regular file"
+}
+
 // restoreRecord puts back one backed-up file with its metadata.
 func (t *fileTransaction) restoreRecord(record txRecord) error {
 	path := record.Path
 	if record.Type == "symlink" {
-		if info, err := os.Lstat(path); err == nil {
-			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-				if err := os.RemoveAll(path); err != nil {
-					return err
-				}
-			} else if err := os.Remove(path); err != nil {
+		info, statErr := os.Lstat(path)
+		switch {
+		case os.IsNotExist(statErr):
+		case statErr != nil:
+			return statErr
+		case info.Mode()&os.ModeSymlink != 0:
+			// Another link sits where the journaled link was: removing a
+			// link destroys no foreign data.
+			if err := os.Remove(path); err != nil {
 				return err
 			}
-		} else if !os.IsNotExist(err) {
-			return err
+		default:
+			// A directory, FIFO, socket or device replaced the journaled
+			// link after the crash. Refuse rather than unlink it.
+			return fmt.Errorf("symlink destination replaced by %s", fileTypeLabel(info.Mode()))
 		}
 		return os.Symlink(record.SymlinkTarget, path)
 	}
 	if record.Backup == "" {
 		return fmt.Errorf("journal record has no backup")
+	}
+	// The backup restores a regular FILE. Refuse any non-regular object now
+	// sitting at the destination: rename would unlink a foreign FIFO, socket
+	// or device, and a directory holds foreign contents. Validation already
+	// refused symlinks, so a live rollback seeing one here was raced.
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("destination replaced by %s", fileTypeLabel(info.Mode()))
+		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	data, err := os.ReadFile(record.Backup)
 	if err != nil {
@@ -481,9 +522,23 @@ func (t *fileTransaction) restoreRecord(record txRecord) error {
 	return txRestoreOwnershipVerified(path, record.UID, record.GID)
 }
 
+// txTempWrite sets the mode and writes the payload of a staged temporary,
+// returning the FIRST failure so nothing is silently discarded. It is a
+// variable so tests can force the write path to fail partway through.
+var txTempWrite = func(temporary *os.File, mode os.FileMode, data []byte) error {
+	if err := temporary.Chmod(mode); err != nil {
+		return err
+	}
+	_, err := temporary.Write(data)
+	return err
+}
+
 // txAtomicReplace is the original _atomic_write_bytes: a fresh 0600 temporary
 // in the destination directory (no umask window, no predictable name), fsync,
 // then rename over a proven-regular destination, then a durable directory.
+// A chmod or write failure must abort BEFORE the rename: publishing a
+// truncated or empty file and reporting success would commit a configuration
+// that was never fully written.
 func txAtomicReplace(destination string, data []byte, mode os.FileMode) error {
 	if err := platform.CheckPath(destination); err != nil {
 		return controllerFileError(err)
@@ -497,9 +552,7 @@ func txAtomicReplace(destination string, data []byte, mode os.FileMode) error {
 	}
 	name := temporary.Name()
 	defer os.Remove(name)
-	if err := temporary.Chmod(mode); err == nil {
-		_, err = temporary.Write(data)
-	}
+	err = txTempWrite(temporary, mode, data)
 	if err == nil {
 		err = temporary.Sync()
 	}
@@ -656,6 +709,34 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 			}
 		}
 		if document.State == "pending" {
+			// Type preflight across EVERY destination before anything is
+			// undone: only a regular file (or nothing) at a journaled path
+			// is state this transaction can faithfully restore or remove.
+			// A directory, FIFO, socket or device appeared after the crash
+			// and is foreign; refusing before the first reverse mutation
+			// means a later record's foreign object can never follow a
+			// partial undo of earlier records. Lstat only — a FIFO must
+			// never be opened, so nothing here can block. checkDestination
+			// has already refused symlinks during validation, so whatever
+			// non-regular object is found now is genuinely foreign.
+			for _, record := range tx.journal {
+				info, err := os.Lstat(record.Path)
+				if err != nil {
+					if os.IsNotExist(err) {
+						continue
+					}
+					return controllerFileError(err)
+				}
+				if !info.Mode().IsRegular() {
+					return &controlError{
+						code: "rollback-failed",
+						rc:   exitUnverify,
+						safeDetail: fmt.Sprintf(
+							"could not restore: %s (destination replaced by %s); unfinished transaction retained",
+							record.Path, fileTypeLabel(info.Mode())),
+					}
+				}
+			}
 			// Refuse to overwrite an unrelated manual edit made after a crash.
 			latest := map[string]txRecord{}
 			for _, record := range tx.journal {

@@ -340,105 +340,7 @@ func stageGeneration(root, source string, m Manifest) (string, error) {
 // Bootstrap is for an explicit first installation. Updates always require an
 // existing managed receipt. It refuses to overwrite any existing command.
 func Bootstrap(ctx context.Context, a platform.App, source, binDir string, dry bool) (map[string]any, error) {
-	m, e := LoadManifest(source)
-	if e != nil {
-		return nil, e
-	}
-	if e = VerifyTree(source, m); e != nil {
-		return nil, e
-	}
-	if e = native(m); e != nil {
-		return nil, e
-	}
-	if !filepath.IsAbs(binDir) || strings.ContainsAny(binDir, "\n\r\x00") {
-		return nil, usage("installation-bin-dir-invalid")
-	}
-	if pending, e := optionalExists(uninstallJournal(a)); e != nil {
-		return nil, e
-	} else if pending {
-		if dry {
-			return nil, fail("uninstall-recovery-required")
-		}
-		if e = platform.WithLock(ctx, a.Scope, func() error { return recoverUninstall(a) }); e != nil {
-			return nil, e
-		}
-	}
-	root := installRoot(a)
-	bin := filepath.Join(binDir, "mihomoctl")
-	data := map[string]any{"version": m.Version, "bin_path": bin, "dry_run": dry, "active_core_preserved": true}
-	if e = platform.CheckPath(bin); e != nil {
-		return nil, e
-	}
-	if _, e = os.Lstat(bin); !os.IsNotExist(e) {
-		return nil, fail("installation-command-exists")
-	}
-	if _, e = os.Lstat(root); !os.IsNotExist(e) {
-		return nil, fail("installation-root-exists")
-	}
-	if dry {
-		return data, nil
-	}
-	e = platform.WithLock(ctx, a.Scope, func() error {
-		if e := recoverUninstall(a); e != nil {
-			return e
-		}
-		if _, e := os.Lstat(root); !os.IsNotExist(e) {
-			return fail("installation-root-exists")
-		}
-		if _, e := os.Lstat(bin); !os.IsNotExist(e) {
-			return fail("installation-command-exists")
-		}
-		if e := platform.PrivateDir(root); e != nil {
-			return e
-		}
-		id, e := stageGeneration(root, source, m)
-		if e != nil {
-			return e
-		}
-		if m.Core != nil {
-			data["core"] = map[string]any{"binary": filepath.Join(root, "generations", id, "core", "mihomo"), "version": m.Core.Version, "activated": false, "provenance": m.Core.Provenance,
-				"program_owned": true, "uninstall_policy": "Install and adopt an independent core with core install --asset before uninstalling this program."}
-		}
-		if e = platform.CheckPath(binDir); e != nil {
-			return e
-		}
-		if e = os.MkdirAll(binDir, 0755); e != nil {
-			return e
-		}
-		// Exclusive create ensures concurrent or foreign installers cannot be overwritten.
-		content := launcher(root)
-		f, e := os.OpenFile(bin, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
-		if e != nil {
-			return e
-		}
-		_, e = f.Write(content)
-		if e == nil {
-			e = f.Sync()
-		}
-		ce := f.Close()
-		if e == nil {
-			e = ce
-		}
-		if e != nil {
-			return e
-		}
-		installationID, e := platform.Token()
-		if e != nil {
-			return e
-		}
-		rec := Receipt{Format: 1, Project: Project, BinPath: bin, LauncherSHA256: platform.Hash(content), InstallationID: installationID}
-		if e = platform.WriteJSON(filepath.Join(root, "receipt.json"), rec); e != nil {
-			return e
-		}
-		if e = platform.WriteJSON(filepath.Join(root, "pending.json"), pending{1, "", id}); e != nil {
-			return e
-		}
-		if e = platform.AtomicWrite(filepath.Join(root, "current"), []byte(id+"\n"), 0600); e != nil {
-			return e
-		}
-		return removePending(root)
-	})
-	return data, e
+	return bootstrap(ctx, a, source, binDir, dry, bootstrapHooks{})
 }
 
 func update(ctx context.Context, a platform.App, r platform.Request) (map[string]any, error) {
@@ -553,6 +455,11 @@ func Uninstall(ctx context.Context, a platform.App, dry bool) (map[string]any, e
 }
 
 func installationStatus(a platform.App) (map[string]any, error) {
+	if pending, e := optionalExists(bootstrapJournalPath(a)); e != nil {
+		return nil, e
+	} else if pending {
+		return nil, fail("bootstrap-recovery-required")
+	}
 	if pending, e := optionalExists(uninstallJournal(a)); e != nil {
 		return nil, e
 	} else if pending {

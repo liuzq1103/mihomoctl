@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -60,12 +61,12 @@ func member(s string, values ...string) bool {
 func Run(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
 	if !Handles(r.Command) {
 		e := platform.Usage("unknown-command")
-		return platform.Failure(r.Name(), a.Scope.Name, e), e
+		return platform.Failure(r.TopLevel(), a.Scope.Name, e), e
 	}
 	var doc platform.Envelope
 	if !mutating(r) && !member(r.Name(), "direct", "rollback", "migrate") {
 		if e := pendingRecovery(a); e != nil {
-			return platform.Failure(r.Name(), a.Scope.Name, e), e
+			return platform.Failure(r.TopLevel(), a.Scope.Name, e), e
 		}
 	}
 	work := func() error { var e error; doc, e = dispatch(ctx, a, r); return e }
@@ -87,16 +88,19 @@ func Run(ctx context.Context, a platform.App, r platform.Request) (platform.Enve
 		err = work()
 	}
 	if err != nil {
-		return platform.Failure(r.Name(), a.Scope.Name, err), err
+		return platform.Failure(r.TopLevel(), a.Scope.Name, err), err
 	}
 	if !mutating(r) && !member(r.Name(), "direct", "rollback", "migrate") {
 		if e := pendingRecovery(a); e != nil {
-			return platform.Failure(r.Name(), a.Scope.Name, e), e
+			return platform.Failure(r.TopLevel(), a.Scope.Name, e), e
 		}
 	}
 	return doc, nil
 }
 func mutating(r platform.Request) bool {
+	if r.Has("dry-run") {
+		return false
+	}
 	n := r.Name()
 	return member(n, "init", "start", "stop", "restart", "profile-set-default", "core-adopt", "service-install", "service-start", "service-stop", "service-restart", "service-uninstall", "tun-enable", "tun-disable", "integration-install", "integration-remove") || n == "reset" && r.Has("apply") || n == "migrate" && r.Has("apply") || n == "env-export" && r.Get("output") != "" || n == "integration-export" && r.Get("output-dir") != ""
 }
@@ -129,7 +133,7 @@ func dispatch(ctx context.Context, a platform.App, r platform.Request) (platform
 		for _, n := range sortedKeys(m.Profiles) {
 			rows = append(rows, profileDoc(n, m.Profiles[n]))
 		}
-		return set(map[string]any{"profiles": rows, "default_profile": m.Default})
+		return set(map[string]any{"profiles": rows})
 	case "profile-show", "profile-validate", "profile-set-default":
 		n := r.Arg(0)
 		if n == "" {
@@ -141,7 +145,7 @@ func dispatch(ctx context.Context, a platform.App, r platform.Request) (platform
 		}
 		p, ok := m.Profiles[n]
 		if !ok {
-			return doc, platform.Usage("profile-unknown")
+			return doc, platform.UsageDetail("profile-unknown", n, "")
 		}
 		if r.Name() == "profile-show" {
 			return set(profileDoc(n, p))
@@ -180,8 +184,12 @@ func dispatch(ctx context.Context, a platform.App, r platform.Request) (platform
 	case "reset":
 		return reset(ctx, a, r)
 	case "rollback":
-		return doc, platform.Usage("historical-rollback-disabled")
+		return doc, platform.UsageDetail("historical-rollback-disabled", "historical rollback is not supported", "")
 	case "migrate":
+		doc.Command = "migrate-apply"
+		if r.Has("dry-run") {
+			doc.Command = "migrate-preview"
+		}
 		if r.Has("apply") == r.Has("dry-run") {
 			return doc, platform.Usage("migration-preview-required")
 		}
@@ -492,7 +500,7 @@ func initialPlan(ctx context.Context, a platform.App, r platform.Request) (manag
 	if src := r.Get("config"); src != "" {
 		v, e := platform.ReadYAML(src, true)
 		if e != nil {
-			return bad(e)
+			return bad(platform.ConfigDiagnostic(e))
 		}
 		if platform.Bool(platform.Map(v["tun"])["enable"]) {
 			return bad(platform.Usage("import-tun-forbidden"))
@@ -593,10 +601,14 @@ func initialPlan(ctx context.Context, a platform.App, r platform.Request) (manag
 		return bad(e)
 	}
 	files[generatedPath(a)] = generated
-	return m, files, map[string]any{"manager": a.Scope.ManagerPath(), "config": m.Core.Config, "credentials": p.Credentials, "core": map[string]any{"binary": binary}, "port": port, "controller_port": cp, "scope": a.Scope.Name, "state": "initialized"}, nil
+	listener := p.HTTP
+	if listener == "" {
+		listener = p.SOCKS
+	}
+	return m, files, map[string]any{"manager": a.Scope.ManagerPath(), "config": m.Core.Config, "credentials": p.Credentials, "core": map[string]any{"binary": binary, "adopted": true}, "port": port, "controller_port": cp, "backend": backend, "listener": listener, "port_is_candidate": r.Get("port") == ""}, nil
 }
 func configValidate(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
-	doc := platform.Document(r.Name(), a.Scope.Name, nil)
+	doc := platform.Document("config-validate", a.Scope.Name, nil)
 	var text []byte
 	var m manager
 	var e error
@@ -624,12 +636,13 @@ func configValidate(ctx context.Context, a platform.App, r platform.Request) (pl
 	}
 	cfg, e := platform.DecodeYAML(text)
 	if e != nil {
+		return doc, platform.ConfigDiagnostic(e)
+	}
+	eps, _, e := parseEndpoints(cfg, a.Scope.System, m.Allow)
+	if e != nil {
 		return doc, e
 	}
-	if _, _, e = parseEndpoints(cfg, a.Scope.System, m.Allow); e != nil {
-		return doc, e
-	}
-	addCheck(&doc, "config-parse", true, "strict YAML and listening surfaces verified")
+	addCheck(&doc, "config-parse", true, fmt.Sprintf("%d listening surfaces", len(eps)))
 	if m.Core.Binary == "" {
 		doc.Checks = append(doc.Checks, platform.Check{Name: "core-validate", Status: "UNVERIFIED", Evidence: "unavailable", Detail: "initialize a trusted core before semantic validation"})
 		doc.Overall = "UNVERIFIED"
@@ -638,7 +651,7 @@ func configValidate(ctx context.Context, a platform.App, r platform.Request) (pl
 	if e = validateCore(ctx, a, m.Core.Binary, text); e != nil {
 		return doc, e
 	}
-	addCheck(&doc, "core-validate", true, "isolated core validation")
+	addCheck(&doc, "core-validate", true, "")
 	return doc, nil
 }
 func addCheck(doc *platform.Envelope, name string, ok bool, detail string) {
@@ -676,28 +689,66 @@ func readLogWindow(p string) ([]byte, int64, error) {
 	return b, start, e
 }
 func doctor(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
-	doc := platform.Document(r.Name(), a.Scope.Name, nil)
-	x, e := resolve(a, "")
-	addCheck(&doc, "manager-config", e == nil, safeDetail(e))
-	if e != nil {
-		return doc, nil
+	doc := platform.Document(r.Name(), a.Scope.Name, map[string]any{"scope": a.Scope.Name})
+	m, managerErr := loadManager(a)
+	detail := ""
+	if managerErr != nil {
+		detail = renderError(managerErr)
 	}
-	e = trustedExecutable(x.Manager.Core.Binary, a.Scope.System)
-	addCheck(&doc, "core-executable", e == nil, safeDetail(e))
-	if e == nil {
-		e = validateCore(ctx, a, x.Manager.Core.Binary, x.Text)
-		addCheck(&doc, "core-validate", e == nil, safeDetail(e))
+	addCheck(&doc, "manager-config", managerErr == nil, detail)
+	if managerErr == nil {
+		doc.Data["backend"] = m.Core.Backend
+		e := trustedExecutable(m.Core.Binary, a.Scope.System)
+		detail = m.Core.Binary
+		if e != nil {
+			detail = renderError(e)
+		}
+		addCheck(&doc, "core-binary", e == nil, detail)
+	}
+	s, e := status(ctx, a, "status", false)
+	if e != nil {
+		addCheckEvidence(&doc, "runtime", "UNVERIFIED", "confirmed", renderError(e))
+	} else {
+		state := s.Overall
+		running := "None"
+		if platform.Bool(platform.Map(s.Data["core"])["initialized"]) {
+			running = "False"
+			if platform.Bool(platform.Map(s.Data["runtime"])["running"]) {
+				running = "True"
+			}
+		}
+		addCheckEvidence(&doc, "runtime", state, "confirmed", "running="+running)
+		snapshot := map[string]any{}
+		for _, key := range []string{"scope", "backend", "listeners", "controller", "tun", "errors"} {
+			snapshot[key] = s.Data[key]
+		}
+		doc.Data["status"] = snapshot
 	}
 	h, e := health(ctx, a, platform.Request{Command: []string{"health"}})
 	if e != nil {
-		addCheck(&doc, "runtime", false, platform.SafeError(e))
+		addCheckEvidence(&doc, "health", "UNVERIFIED", "confirmed", renderError(e))
 	} else {
-		doc.Checks = append(doc.Checks, h.Checks...)
-		if h.Overall != "PASS" {
-			doc.Overall = h.Overall
+		for _, check := range h.Checks {
+			addCheckEvidence(&doc, check.Name, check.Status, check.Evidence, check.Detail)
 		}
 	}
-	doc.Data["namespace"] = "mihomoctl-go"
+	_, e = exec.LookPath("systemctl")
+	state, evidence := "PASS", "confirmed"
+	if e != nil {
+		state, evidence = "SKIPPED", "unavailable"
+	}
+	addCheckEvidence(&doc, "dependency-systemctl", state, evidence, "")
+	// The native product checks its running executable instead of depending on
+	// the baseline's Python interpreter. No Go compiler is required at runtime.
+	binary, e := os.Executable()
+	if e == nil {
+		_, e = os.Stat(binary)
+	}
+	state, evidence = "PASS", "confirmed"
+	if e != nil {
+		state, evidence = "SKIPPED", "unavailable"
+	}
+	addCheckEvidence(&doc, "dependency-go-binary", state, evidence, "")
 	return doc, nil
 }
 func safeDetail(e error) string {

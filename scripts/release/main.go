@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -28,6 +29,10 @@ func run() error {
 	flag.Parse()
 	if delivery.Version != platform.Version {
 		return fmt.Errorf("platform version disagrees with delivery version")
+	}
+	provenance, e := readSourceProvenance(".")
+	if e != nil {
+		return e
 	}
 	if e := os.MkdirAll(*out, 0700); e != nil {
 		return e
@@ -89,7 +94,7 @@ func run() error {
 			if e := cmd.Run(); e != nil {
 				return e
 			}
-			for _, name := range []string{"install.sh", "uninstall.sh", "LICENSE", "CHANGELOG.md"} {
+			for _, name := range []string{"install.sh", "uninstall.sh", "LICENSE", "CHANGELOG.md", "README.md", "README.en.md"} {
 				b, e := os.ReadFile(name)
 				if e != nil {
 					return e
@@ -97,6 +102,20 @@ func run() error {
 				if e = platform.AtomicWrite(filepath.Join(root, name), b, 0600); e != nil {
 					return e
 				}
+			}
+			// The delivery contract keeps its own name. It is not an installation
+			// guide, and the bundle's README already documents how to install.
+			for source, destination := range map[string]string{"scripts/DELIVERY.md": "DELIVERY.md", "scripts/ACCEPTANCE.md": "ACCEPTANCE.md"} {
+				b, e := os.ReadFile(source)
+				if e != nil {
+					return e
+				}
+				if e = platform.AtomicWrite(filepath.Join(root, destination), b, 0600); e != nil {
+					return e
+				}
+			}
+			if e := platform.WriteJSON(filepath.Join(root, "BUILD.json"), provenance); e != nil {
+				return e
 			}
 			if e := delivery.WriteManifest(root, delivery.Manifest{Version: delivery.Version, Kind: "basic", Arch: arch}); e != nil {
 				return e
@@ -234,6 +253,9 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	if e = platform.WriteJSON(filepath.Join(source, "BUILD.json"), provenance); e != nil {
+		return e
+	}
 	p := filepath.Join(output, delivery.Project+"-"+delivery.Version+"-source.tar.gz")
 	if e = delivery.Archive(source, p); e != nil {
 		return e
@@ -252,11 +274,39 @@ func run() error {
 		return e
 	}
 	receipt := map[string]any{"format": 1, "project": delivery.Project, "version": delivery.Version, "entry": *entry, "builder_go": runtime.Version(), "offline": *offline, "architectures": archList, "publication": "candidate only; independent review required", "trust": "SHA256SUMS verifies consistency, not independent trust", "optional_inputs": *inputs}
+	receipt["source_commit"] = provenance.Commit
+	receipt["source_dirty"] = provenance.Dirty
 	if e = platform.WriteJSON(filepath.Join(output, "build-receipt.json"), receipt); e != nil {
 		return e
 	}
 	success = true
 	return nil
+}
+
+type sourceProvenance struct {
+	Commit string `json:"source_commit"`
+	Dirty  bool   `json:"source_dirty"`
+}
+
+func readSourceProvenance(directory string) (sourceProvenance, error) {
+	gitOutput := func(args ...string) ([]byte, error) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = directory
+		return cmd.Output()
+	}
+	head, e := gitOutput("rev-parse", "--verify", "HEAD")
+	if e != nil {
+		return sourceProvenance{}, e
+	}
+	commit := strings.TrimSpace(string(head))
+	if _, e = hex.DecodeString(commit); e != nil || len(commit) != 40 {
+		return sourceProvenance{}, fmt.Errorf("full source commit unavailable")
+	}
+	status, e := gitOutput("status", "--porcelain", "--untracked-files=normal")
+	if e != nil {
+		return sourceProvenance{}, e
+	}
+	return sourceProvenance{Commit: commit, Dirty: len(status) != 0}, nil
 }
 func buildEnv(arch string) []string {
 	var env []string
@@ -285,12 +335,12 @@ func copyTree(source, dest string) error {
 			target = filepath.Join(dest, rel)
 		}
 		if d.IsDir() {
-			if d.Name() == ".validation" {
+			if d.Name() == ".validation" || d.Name() == "__pycache__" {
 				return filepath.SkipDir
 			}
 			return os.MkdirAll(target, 0700)
 		}
-		if strings.HasSuffix(d.Name(), ".test") || strings.HasSuffix(d.Name(), ".exe") {
+		if strings.HasSuffix(d.Name(), ".test") || strings.HasSuffix(d.Name(), ".exe") || strings.HasSuffix(d.Name(), ".pyc") {
 			return nil
 		}
 		st, e := d.Info()

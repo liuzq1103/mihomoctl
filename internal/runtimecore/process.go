@@ -52,7 +52,7 @@ func validateCore(ctx context.Context, a platform.App, binary string, text []byt
 	}
 	cfg, e := platform.DecodeYAML(text)
 	if e != nil {
-		return e
+		return platform.ConfigDiagnostic(e)
 	}
 	staging, e := os.MkdirTemp("", "mihomoctl-go-validate-")
 	if e != nil {
@@ -139,7 +139,9 @@ func status(ctx context.Context, a platform.App, command string, stoppedOK bool)
 	doc := platform.Document(command, a.Scope.Name, nil)
 	x, e := resolve(a, "")
 	if e != nil {
-		return doc, e
+		doc.Overall = "UNVERIFIED"
+		doc.Data = map[string]any{"scope": a.Scope.Name, "backend": nil, "core": map[string]any{"initialized": false}, "controller": nil, "listeners": []any{}, "active_config": nil, "proxy": nil, "mode": nil, "tun": nil, "errors": []string{renderError(e)}, "error": platform.SafeError(e), "overall": "UNVERIFIED", "evidence": "unavailable"}
+		return doc, nil
 	}
 	id, e := runningIdentity(ctx, a, x.Manager)
 	if e != nil {
@@ -147,6 +149,10 @@ func status(ctx context.Context, a platform.App, command string, stoppedOK bool)
 	}
 	running := id != nil
 	listening := running
+	evidence := "unavailable"
+	if running {
+		evidence = "inferred"
+	}
 	rows := []map[string]any{}
 	for _, ep := range x.Endpoints {
 		owned := running && ownsListener(*id, ep)
@@ -157,7 +163,7 @@ func status(ctx context.Context, a platform.App, command string, stoppedOK bool)
 		if owned {
 			s = "listening"
 		}
-		rows = append(rows, map[string]any{"name": ep.Name, "source": ep.Source, "type": ep.Type, "address": ep.Address, "port": ep.Port, "authenticated": ep.Authenticated, "status": s, "evidence": "inferred"})
+		rows = append(rows, map[string]any{"name": ep.Name, "source": ep.Source, "type": ep.Type, "address": ep.Address, "port": ep.Port, "authenticated": ep.Authenticated, "status": s, "evidence": evidence})
 	}
 	var controller any
 	if x.Controller != nil {
@@ -165,20 +171,35 @@ func status(ctx context.Context, a platform.App, command string, stoppedOK bool)
 		if !owned {
 			listening = false
 		}
-		controller = map[string]any{"address": x.Controller.Address, "port": x.Controller.Port, "authenticated": true, "listening": owned}
+		state := "not-listening"
+		if owned {
+			state = "listening"
+		}
+		controller = map[string]any{"address": x.Controller.Address, "port": x.Controller.Port, "authenticated": true, "status": state, "evidence": evidence}
 	}
-	detail := "stopped"
-	pid := 0
+	detail := runtimeStoppedDetail(a, x.Manager)
+	runtime := map[string]any{"backend": x.Manager.Core.Backend, "running": running, "detail": detail}
 	if running {
 		detail = "running"
-		pid = id.PID
+		delete(runtime, "detail")
+		runtime["pid"] = id.PID
+		runtime["listening"] = listening
+		runtime["identity"] = map[string]any{"config": x.Manager.Core.Config, "exe": id.Exe, "pid": id.PID, "uid": id.UID, "start_time": id.Start}
 	}
-	doc.Data = map[string]any{"scope": a.Scope.Name, "backend": x.Manager.Core.Backend, "core": map[string]any{"binary": x.Manager.Core.Binary, "config": x.Manager.Core.Config, "initialized": true, "status": detail}, "controller": controller, "listeners": rows, "active_config": x.Manager.Core.Config, "config": map[string]any{"path": x.Manager.Core.Config, "active": true}, "mode": x.Config["mode"], "routing_mode": x.Config["mode"], "tun": map[string]any{"enabled": x.Manager.Tun.Enabled, "device": tunDevice(x.Manager), "system_only": true}, "runtime": map[string]any{"running": running, "listening": listening, "pid": pid, "detail": detail}, "evidence": "inferred"}
+	doc.Data = map[string]any{"scope": a.Scope.Name, "backend": x.Manager.Core.Backend, "core": map[string]any{"binary": x.Manager.Core.Binary, "config": x.Manager.Core.Config, "backend": x.Manager.Core.Backend, "initialized": true, "status": detail}, "controller": controller, "listeners": rows, "active_config": x.Manager.Core.Config, "config": map[string]any{"path": x.Manager.Core.Config, "active": true}, "mode": x.Config["mode"], "routing_mode": x.Config["mode"], "tun": map[string]any{"enabled": x.Manager.Tun.Enabled, "device": tunDevice(x.Manager), "system_only": true}, "runtime": runtime, "evidence": "inferred", "errors": []string{}, "error": nil}
+	if !running {
+		doc.Data["error"] = detail
+	}
+	if platform.String(x.Config["mode"]) == "" {
+		doc.Data["routing_mode"] = "unknown"
+	}
 	vars, e := environment(x, "")
 	if e == nil {
 		doc.Data["proxy"] = redactedEnvironment(x, vars)
 	} else {
-		return doc, e
+		doc.Data["errors"] = []string{renderError(e)}
+		doc.Data["error"] = renderError(e)
+		doc.Overall = "FAIL"
 	}
 	doc.Data["proxy_mode"] = "listener-environment"
 	if x.Manager.Tun.Enabled {
@@ -192,6 +213,16 @@ func status(ctx context.Context, a platform.App, command string, stoppedOK bool)
 	}
 	doc.Data["overall"] = doc.Overall
 	return doc, nil
+}
+
+func runtimeStoppedDetail(a platform.App, m manager) string {
+	if m.Core.Backend != "process" {
+		return "stopped"
+	}
+	if _, err := os.Lstat(a.Scope.RuntimeState()); os.IsNotExist(err) {
+		return "no-state"
+	}
+	return "crashed"
 }
 func lifecycle(ctx context.Context, a platform.App, action string) error {
 	if e := preventLockInheritance(a); e != nil {

@@ -28,7 +28,10 @@ func trustedExecutable(p string, system bool) error {
 		return e
 	}
 	st, e := os.Stat(p)
-	if e != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0111 == 0 || st.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
+	if e != nil {
+		return missingCoreError(p, e)
+	}
+	if !st.Mode().IsRegular() || st.Mode().Perm()&0111 == 0 || st.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
 		return platform.Usage("core-unavailable")
 	}
 	for q := p; ; q = filepath.Dir(q) {
@@ -173,6 +176,27 @@ func procIP(s string) string {
 		ip[i] = byte(n)
 	}
 	return ip.String()
+}
+
+func listenerPresent(ep endpoint) bool {
+	for _, name := range []string{"tcp", "tcp6"} {
+		b, err := os.ReadFile("/proc/net/" + name)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			cols := strings.Fields(line)
+			if len(cols) < 4 || cols[3] != "0A" {
+				continue
+			}
+			host, port, ok := strings.Cut(cols[1], ":")
+			n, err := strconv.ParseInt(port, 16, 32)
+			if ok && err == nil && int(n) == ep.Port && procIP(host) == ep.Address {
+				return true
+			}
+		}
+	}
+	return false
 }
 func detach(cmd *exec.Cmd)                       { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 func reservePort(ep endpoint) (netCloser, error) { return net.Listen("tcp", ep.address()) }

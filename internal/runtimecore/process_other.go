@@ -16,7 +16,10 @@ func trustedExecutable(p string, system bool) error {
 		return e
 	}
 	st, e := os.Stat(p)
-	if e != nil || !st.Mode().IsRegular() {
+	if e != nil {
+		return missingCoreError(p, e)
+	}
+	if !st.Mode().IsRegular() {
 		return platform.Usage("core-unavailable")
 	}
 	return nil
@@ -26,6 +29,7 @@ func identityAlive(identity) bool             { return false }
 func processExists(int) bool                  { return false }
 func signalOwned(identity, bool) error        { return linuxRequired() }
 func ownsListener(identity, endpoint) bool    { return false }
+func listenerPresent(endpoint) bool           { return false }
 func detach(*exec.Cmd)                        {}
 func reservePort(endpoint) (netCloser, error) { return nil, linuxRequired() }
 func validationIdentity(context.Context, *exec.Cmd, platform.App, string) error {

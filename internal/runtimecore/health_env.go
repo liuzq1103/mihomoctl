@@ -154,10 +154,12 @@ func health(ctx context.Context, a platform.App, r platform.Request) (platform.E
 	}
 	x, e := resolve(a, p)
 	if e != nil {
-		return platform.Envelope{}, e
+		doc := platform.Document("health", a.Scope.Name, map[string]any{"overall": "FAIL"})
+		addCheck(&doc, "manager-config", false, renderError(e))
+		return doc, nil
 	}
 	doc, e := healthResolved(ctx, a, x, nil)
-	doc.Command = r.Name()
+	doc.Command = "health"
 	if e != nil {
 		return doc, e
 	}
@@ -185,6 +187,7 @@ func health(ctx context.Context, a platform.App, r platform.Request) (platform.E
 		}
 		addCheck(&doc, "egress", ok, "explicit HTTPS proxy probe")
 	}
+	doc.Data = map[string]any{"overall": doc.Overall}
 	return doc, nil
 }
 func healthResolved(ctx context.Context, a platform.App, x resolved, known *identity) (platform.Envelope, error) {
@@ -199,10 +202,11 @@ func healthResolved(ctx context.Context, a platform.App, x resolved, known *iden
 		return doc, e
 	}
 	running := id != nil && identityAlive(*id)
-	addCheck(&doc, "runtime", running, "process identity checked")
+	detail := "identity checked"
 	if !running {
-		return doc, nil
+		detail = runtimeStoppedDetail(a, x.Manager)
 	}
+	addCheckEvidence(&doc, "runtime", verdict(running), "inferred", detail)
 	timeout := time.Duration(defaults(x.Profile).Health.Timeout) * time.Second
 	// Match the original five-second read allowance. Real Mihomo may spend
 	// more than three seconds producing a local authenticated HEAD response.
@@ -210,12 +214,23 @@ func healthResolved(ctx context.Context, a platform.App, x resolved, known *iden
 		timeout = 5 * time.Second
 	}
 	for _, ep := range x.Endpoints {
-		owned := ownsListener(*id, ep)
-		addCheck(&doc, "listener-"+ep.Name, owned, "socket belongs to managed process")
-		if !owned {
+		if !ep.http() && !ep.socks() {
 			continue
 		}
-		if !ep.http() && !ep.socks() {
+		if !running {
+			addCheckEvidence(&doc, "listener-"+ep.Name, "SKIPPED", "confirmed", "runtime-not-running")
+			continue
+		}
+		owned := ownsListener(*id, ep)
+		evidence, detail := "inferred", ep.address()+" listening (uid ownership confirmed)"
+		if !owned {
+			evidence, detail = "unavailable", ep.address()+" listening (uid ownership unverified)"
+			if !listenerPresent(ep) {
+				evidence, detail = "confirmed", ep.address()+" not listening"
+			}
+		}
+		addCheckEvidence(&doc, "listener-"+ep.Name, verdict(owned), evidence, detail)
+		if !owned {
 			continue
 		}
 		c := credentials{}
@@ -226,28 +241,52 @@ func healthResolved(ctx context.Context, a platform.App, x resolved, known *iden
 			c = x.Credentials
 		}
 		if e = validateCredentials(c); e != nil {
-			addCheck(&doc, "auth-"+ep.Name, false, "credentials required")
+			addCheck(&doc, "auth-"+ep.Name, false, "authenticated endpoint credentials required")
 			continue
 		}
 		if ep.http() {
 			anon := probeHTTP(ctx, ep, "", false, timeout)
 			auth := probeHTTP(ctx, ep, "Basic "+base64.StdEncoding.EncodeToString([]byte(c.Username+":"+c.Password)), false, timeout)
-			addCheck(&doc, "auth-anon-"+ep.Name, anon == 407, "anonymous request must return 407")
-			addCheck(&doc, "auth-http-"+ep.Name, auth >= 200 && auth != 407, "authenticated request accepted")
+			detail := httpProbeDetail(anon)
+			if anon == 407 {
+				detail = "407"
+			}
+			addCheck(&doc, "auth-anon-"+ep.Name, anon == 407, detail)
+			addCheck(&doc, "auth-http-"+ep.Name, auth >= 200 && auth != 407, httpProbeDetail(auth))
 		}
 		if ep.socks() {
-			addCheck(&doc, "auth-socks-anon-"+ep.Name, probeSOCKS(ctx, ep, nil, timeout), "anonymous SOCKS refused")
-			addCheck(&doc, "auth-socks-"+ep.Name, probeSOCKS(ctx, ep, &c, timeout), "SOCKS username/password accepted")
+			ok, detail := probeSOCKSDetail(ctx, ep, nil, timeout)
+			addCheck(&doc, "auth-socks-anon-"+ep.Name, ok, detail)
+			ok, detail = probeSOCKSDetail(ctx, ep, &c, timeout)
+			addCheck(&doc, "auth-socks-"+ep.Name, ok, detail)
 		}
 	}
 	if x.Controller != nil {
+		if !running {
+			addCheckEvidence(&doc, "controller", "SKIPPED", "confirmed", "runtime-not-running")
+			return doc, nil
+		}
 		owned := ownsListener(*id, *x.Controller)
-		addCheck(&doc, "controller-ownership", owned, "socket belongs to managed process")
+		evidence := "unavailable"
+		if owned {
+			evidence = "inferred"
+		}
+		addCheckEvidence(&doc, "controller-ownership", verdict(owned), evidence, "")
 		if owned {
 			anon := probeHTTP(ctx, *x.Controller, "", true, timeout)
 			auth := probeHTTP(ctx, *x.Controller, "Bearer "+platform.String(x.Config["secret"]), true, timeout)
-			addCheck(&doc, "controller", anon == 401 && auth == 200, "anonymous 401 and authenticated 200 required")
+			detail := "anonymous-401+authorized-200"
+			if anon == 0 || auth == 0 {
+				detail = "probe-failed"
+			} else if anon != 401 {
+				detail = fmt.Sprintf("anonymous-status=%d (expected 401)", anon)
+			} else if auth != 200 {
+				detail = fmt.Sprintf("authorized-status=%d (expected 200)", auth)
+			}
+			addCheck(&doc, "controller", anon == 401 && auth == 200, detail)
 		}
+	} else {
+		addCheckEvidence(&doc, "controller", "SKIPPED", "confirmed", "not-configured")
 	}
 	return doc, nil
 }
@@ -294,9 +333,13 @@ func probeHTTP(ctx context.Context, ep endpoint, auth string, controller bool, t
 	return resp.StatusCode
 }
 func probeSOCKS(ctx context.Context, ep endpoint, c *credentials, timeout time.Duration) bool {
+	ok, _ := probeSOCKSDetail(ctx, ep, c, timeout)
+	return ok
+}
+func probeSOCKSDetail(ctx context.Context, ep endpoint, c *credentials, timeout time.Duration) (bool, string) {
 	s, e := dialProbe(ctx, ep, timeout)
 	if e != nil {
-		return false
+		return false, "probe-failed"
 	}
 	defer s.Close()
 	greeting := []byte{5, 1, 0}
@@ -304,24 +347,43 @@ func probeSOCKS(ctx context.Context, ep endpoint, c *credentials, timeout time.D
 		greeting = []byte{5, 2, 0, 2}
 	}
 	if _, e = s.Write(greeting); e != nil {
-		return false
+		return false, "probe-failed"
 	}
 	reply := make([]byte, 2)
 	if _, e = io.ReadFull(s, reply); e != nil || reply[0] != 5 {
-		return false
+		return false, "probe-failed"
 	}
 	if c == nil {
-		return reply[1] == 255 || reply[1] == 2
+		if reply[1] == 255 || reply[1] == 2 {
+			return true, "anonymous-rejected"
+		}
+		return false, "anonymous-accepted"
 	}
-	if reply[1] != 2 || len(c.Username) > 255 || len(c.Password) > 255 {
-		return false
+	if reply[1] != 2 {
+		return false, "auth-not-required"
+	}
+	if len(c.Username) > 255 || len(c.Password) > 255 {
+		return false, "credential-too-long"
 	}
 	b := append([]byte{1, byte(len(c.Username))}, []byte(c.Username)...)
 	b = append(b, byte(len(c.Password)))
 	b = append(b, []byte(c.Password)...)
 	if _, e = s.Write(b); e != nil {
-		return false
+		return false, "probe-failed"
 	}
 	_, e = io.ReadFull(s, reply)
-	return e == nil && reply[0] == 1 && reply[1] == 0
+	if e != nil {
+		return false, "probe-failed"
+	}
+	if reply[0] == 1 && reply[1] == 0 {
+		return true, "authenticated"
+	}
+	return false, "auth-rejected"
+}
+
+func httpProbeDetail(status int) string {
+	if status == 0 {
+		return "probe-failed"
+	}
+	return fmt.Sprintf("status=%d", status)
 }

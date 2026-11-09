@@ -24,8 +24,13 @@ func main() { os.Exit(runMain(os.Args[1:])) }
 func runMain(args []string) int {
 	if len(args) == 0 {
 		if st, e := os.Stdin.Stat(); e != nil || st.Mode()&os.ModeCharDevice == 0 {
+			// Without a command the original prints its grouped help and
+			// then refuses with a usage error; it never exits successfully
+			// without having done something.
 			fmt.Print(command.Help(nil))
-			return 0
+			env := platform.Failure("mihomoctl", "user", platform.UsageDetail("usage-error", "a command is required", "run mihomoctl --help"))
+			fmt.Fprintln(os.Stderr, "mihomoctl:", "usage-error: a command is required (run mihomoctl --help)")
+			return env.ExitCode()
 		}
 	}
 	legacy := len(args) == 0
@@ -44,7 +49,11 @@ func runMain(args []string) int {
 	if !legacy {
 		p, err := command.Parse(args, os.Stdin, os.Stdout, os.Stderr)
 		if err != nil {
-			env := platform.Failure(p.Request.Name(), scopeName(p.System), err)
+			name := p.Request.TopLevel()
+			if name == "" {
+				name = "mihomoctl"
+			}
+			env := platform.Failure(name, scopeName(p.System), err)
 			if env.Command == "" {
 				env.Command = "mihomoctl"
 			}
@@ -172,7 +181,14 @@ func emitCLI(env platform.Envelope, jsonMode bool) int {
 		}
 	} else if env.Overall != "PASS" {
 		for _, e := range env.Errors {
-			fmt.Fprintln(os.Stderr, "mihomoctl:", e.Code)
+			line := e.Code
+			if e.Detail != "" {
+				line += ": " + e.Detail
+			}
+			if e.Remediation != "" {
+				line += " (" + e.Remediation + ")"
+			}
+			fmt.Fprintln(os.Stderr, "mihomoctl:", line)
 		}
 		fmt.Fprint(os.Stderr, humanOutput(env))
 	} else {

@@ -41,7 +41,9 @@ jobs:
         os: ['22.04', '24.04']
         arch: [amd64, arm64]
     runs-on: ubuntu-${{ matrix.os }}
-    timeout-minutes: 60
+    # The arm64 gate executes the suite twice under QEMU emulation (root
+    # ownership tests, then the complementary non-root user-scope pass).
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,7 +72,7 @@ jobs:
             -v "$RUNNER_TEMP/toolchain/go:/usr/local/go:ro" \
             -e PATH=/usr/local/go/bin:/usr/sbin:/usr/bin:/sbin:/bin "ubuntu:$UBUNTU" sh -ec '
               apt-get update
-              apt-get install -y ca-certificates gcc libc6-dev git
+              apt-get install -y ca-certificates gcc libc6-dev git nodejs
               git config --global --add safe.directory /work
               sh scripts/ci-linux.sh arm64
             '

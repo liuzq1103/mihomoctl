@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -79,11 +81,20 @@ func Parse(argv []string, input io.Reader, output, stderr io.Writer) (Parsed, er
 	}
 	args = cleaned
 	p.Request.JSON = p.JSON
+	userFlag, systemFlag := false, false
+	for _, arg := range args {
+		userFlag = userFlag || arg == "--user"
+		systemFlag = systemFlag || arg == "--system"
+	}
+	if userFlag && systemFlag {
+		return p, platform.UsageDetail("scope-flags-exclusive", "--user and --system are mutually exclusive", "")
+	}
 	scope := ""
 	for len(args) > 0 && (args[0] == "--system" || args[0] == "--user") {
 		v := args[0]
 		if scope != "" && scope != v {
-			return p, platform.Usage("scope-flags-exclusive")
+			p.System = false
+			return p, platform.UsageDetail("scope-flags-exclusive", "--user and --system are mutually exclusive", "")
 		}
 		scope = v
 		p.System = v == "--system"
@@ -91,7 +102,7 @@ func Parse(argv []string, input io.Reader, output, stderr io.Writer) (Parsed, er
 	}
 	if len(args) == 0 {
 		if p.JSON {
-			return p, platform.Usage("usage-error")
+			return p, platform.UsageDetail("usage-error", "a command is required", "run mihomoctl --help")
 		}
 		p.Help = Help(nil)
 		return p, nil
@@ -103,7 +114,8 @@ func Parse(argv []string, input io.Reader, output, stderr io.Writer) (Parsed, er
 	for _, retired := range []string{"paseo", "codex", "opencode", "diagnose", "ready"} {
 		if args[0] == retired {
 			p.Request.Command = []string{retired}
-			return p, platform.Usage("command-retired")
+			return p, platform.UsageDetail("retired-command", "the legacy application-specific or readiness entry has been retired",
+				"Use mihomoctl exec -- COMMAND for explicit environment injection, mihomoctl health check or mihomoctl doctor; migrate old configuration with mihomoctl migrate --dry-run.")
 		}
 	}
 	if args[0] == "health" && len(args) > 1 && args[1] == "check" {
@@ -143,9 +155,11 @@ func Parse(argv []string, input io.Reader, output, stderr io.Writer) (Parsed, er
 					return p, nil
 				}
 			}
-			return p, platform.Usage("usage-error")
+			// A group command without a known action reports the group
+			// parser, exactly like the original argparse hierarchy.
+			return p, groupArguments(args[0])
 		}
-		return p, platform.Usage("unknown-command")
+		return p, platform.UsageDetail("unknown-command", "unrecognized command; run mihomoctl --help", "")
 	}
 	p.Request.Command = selected.Command
 	args = args[len(selected.Command):]
@@ -155,6 +169,7 @@ func Parse(argv []string, input io.Reader, output, stderr io.Writer) (Parsed, er
 			flags[f] = o
 		}
 	}
+	unknown := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--help" || arg == "-h" {
@@ -163,29 +178,36 @@ func Parse(argv []string, input io.Reader, output, stderr io.Writer) (Parsed, er
 		}
 		if strings.HasPrefix(arg, "-") {
 			f, v, inline := strings.Cut(arg, "=")
+			switch f {
+			case "--python", "--wheelhouse", "--extras", "--no-extras":
+				return p, pythonPackagingRefusal()
+			}
 			o, ok := flags[f]
 			if !ok {
-				switch f {
-				case "--python", "--wheelhouse", "--extras", "--no-extras":
-					return p, platform.Usage("python-packaging-not-supported")
-				}
-				return p, platform.Usage("usage-error")
+				// argparse validates required values before the outer parser
+				// reports its unknown options. Retain the refusal until those
+				// checks have run, without retaining the private spelling.
+				unknown = true
+				continue
 			}
 			k := key(o)
 			if o.Type == "bool" {
 				if inline {
-					return p, platform.Usage("usage-error")
+					return p, invalidValue(selected)
 				}
 				v = "true"
 			} else if !inline {
 				i++
 				if i >= len(args) {
-					return p, platform.Usage("usage-error")
+					return p, invalidValue(selected)
 				}
 				v = args[i]
 			}
 			if e := validate(o, v); e != nil {
-				return p, e
+				return p, invalidValue(selected)
+			}
+			if k == "version" && (selected.Command[0] == "core" || selected.Command[0] == "release") && !coreVersionArgument.MatchString(v) {
+				return p, invalidValue(selected)
 			}
 			p.Request.Options[k] = append(p.Request.Options[k], v)
 		} else {
@@ -194,48 +216,68 @@ func Parse(argv []string, input io.Reader, output, stderr io.Writer) (Parsed, er
 	}
 	for _, o := range selected.Options {
 		if o.Required && !p.Request.Has(key(o)) {
-			return p, platform.Usage("usage-error")
+			return p, invalidValue(selected)
 		}
 	}
 	if len(p.Request.Args) > len(selected.Args) {
-		return p, platform.Usage("usage-error")
+		return p, unknownOption(selected)
 	}
 	for i, o := range selected.Args {
 		if i >= len(p.Request.Args) {
 			if o.Nargs != "?" && o.Nargs != "*" {
-				return p, platform.Usage("usage-error")
+				return p, invalidValue(selected)
 			}
 		} else if e := validate(o, p.Request.Args[i]); e != nil {
-			return p, e
+			return p, invalidValue(selected)
 		}
 	}
 	for _, g := range selected.Exclusive {
 		n := 0
+		destinations := map[string]bool{}
 		for _, dest := range g.Names {
-			for _, o := range selected.Options {
-				if o.Name == dest && p.Request.Has(key(o)) {
-					n++
-				}
+			destinations[dest] = true
+		}
+		for _, o := range selected.Options {
+			if destinations[o.Name] && p.Request.Has(key(o)) {
+				n++
 			}
 		}
 		if n > 1 || (n == 0 && g.Required) {
-			return p, platform.Usage("usage-error")
+			return p, invalidValue(selected)
 		}
 	}
 	if p.Request.Has("profile") && p.Request.Has("binding") {
-		return p, platform.Usage("profile-binding-exclusive")
+		return p, platform.UsageDetail("profile-binding-exclusive", "--profile and --binding are mutually exclusive", "")
+	}
+	if unknown {
+		return p, unknownOption(selected)
 	}
 	if len(p.Request.Child) > 0 && selected.Command[0] != "exec" && selected.Command[0] != "direct" {
-		return p, platform.Usage("usage-error")
+		return p, invalidValue(selected)
 	}
 	if (selected.Command[0] == "exec" || selected.Command[0] == "direct") && len(p.Request.Child) == 0 {
-		return p, platform.Usage("command-required")
+		verb := selected.Command[0] + " requires: " + selected.Command[0]
+		if selected.Command[0] == "exec" {
+			verb = "exec requires: exec [--profile P] -- COMMAND [ARGS...]"
+		} else {
+			verb = "direct requires: direct -- COMMAND [ARGS...]"
+		}
+		return p, platform.UsageDetail("usage-error", verb, "")
 	}
 	if p.Request.Has("python") || p.Request.Has("wheelhouse") || p.Request.Has("extras") || p.Request.Has("no-extras") {
-		return p, platform.Usage("python-packaging-not-supported")
+		return p, pythonPackagingRefusal()
 	}
 	return p, nil
 }
+
+var coreVersionArgument = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+
+func pythonPackagingRefusal() error {
+	return platform.UsageDetail("python-packaging-not-supported",
+		"Python packaging options are not supported by the Go distribution.",
+		"Install a verified Go bundle with sh install.sh --user; use mihomoctl update SOURCE for Go updates.")
+}
+
 func validate(o Option, v string) error {
 	if o.Type == "int" {
 		if _, e := strconv.Atoi(v); e != nil {
@@ -254,6 +296,68 @@ func validate(o Option, v string) error {
 		return platform.Usage("usage-error")
 	}
 	return nil
+}
+
+// groupCommands are the original's nested command families. Their dispatcher
+// builds a parent parser with subparsers, so an unknown option is refused by
+// that parent, which only knows --help. Every other command is a flat leaf.
+var groupCommands = map[string]bool{
+	"config": true, "profile": true, "env": true, "core": true,
+	"tun": true, "integration": true, "service": true, "release": true,
+	"rules": true, "controller": true, "subscription": true, "provider": true,
+}
+
+// invalidValue mirrors the original's leaf-parser refusal: the diagnostic
+// names the leaf command and the remediation lists the accepted options.
+func invalidValue(spec *Spec) error {
+	return platform.UsageDetail("usage-error", invalidArgumentsFor(spec), validOptionsFor(spec))
+}
+
+// unknownOption mirrors the original's parser hierarchy. An unrecognized
+// option is refused by the outermost parser: for a group command that is the
+// group itself, which only knows --help.
+func unknownOption(spec *Spec) error {
+	if groupCommands[spec.Command[0]] {
+		return groupArguments(spec.Command[0])
+	}
+	return platform.UsageDetail("usage-error", invalidArgumentsFor(spec), validOptionsFor(spec))
+}
+
+// groupArguments reports a group command that cannot accept the arguments.
+func groupArguments(group string) error {
+	return platform.UsageDetail("usage-error", "invalid arguments for mihomoctl "+group, "mihomoctl "+group+" --help; valid options: --help, -h")
+}
+
+func invalidArgumentsFor(spec *Spec) string {
+	return "invalid arguments for mihomoctl " + strings.Join(spec.Command, " ")
+}
+
+// validOptionsFor lists the accepted option spellings of a leaf parser.
+func validOptionsFor(spec *Spec) string {
+	seen := map[string]bool{}
+	for _, o := range spec.Options {
+		for _, f := range o.Flags {
+			// The inherited parser diagnostic lists the inherited options.
+			// Go distribution extensions are advertised by their own help;
+			// they do not alter a baseline invocation's error contract.
+			if spec.Command[0] == "core" && f == "--asset" {
+				continue
+			}
+			if (spec.Command[0] == "release" || spec.Command[0] == "update") && (f == "--kind" || f == "--sha256") {
+				continue
+			}
+			seen[f] = true
+		}
+	}
+	seen["--json"] = true
+	seen["--help"] = true
+	seen["-h"] = true
+	list := make([]string, 0, len(seen))
+	for f := range seen {
+		list = append(list, f)
+	}
+	sort.Strings(list)
+	return "mihomoctl " + strings.Join(spec.Command, " ") + " --help; valid options: " + strings.Join(list, ", ")
 }
 func Help(words []string) string {
 	var b strings.Builder

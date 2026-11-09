@@ -266,7 +266,11 @@ func resetPreview(ctx context.Context, a platform.App, r platform.Request) (map[
 	return map[string]any{"state": "preview", "scope": a.Scope.Name, "core": core, "removed": paths, "replaced": []string{a.Scope.ManagerPath(), filepath.Join(a.Scope.ConfigRoot, "mihomo", "config.yaml"), filepath.Join(a.Scope.ConfigRoot, "credentials", m.Default+".yaml")}, "preserved": []string{filepath.Join(a.Scope.DataRoot, "cores"), filepath.Join(a.Scope.StateRoot, "logs"), filepath.Join(a.Scope.StateRoot, "backups")}, "plan_sha256": platform.Hash(b)}, nil
 }
 func reset(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
-	doc := platform.Document(r.Name(), a.Scope.Name, nil)
+	name := "reset-apply"
+	if r.Has("dry-run") {
+		name = "reset-preview"
+	}
+	doc := platform.Document(name, a.Scope.Name, nil)
 	if r.Has("apply") == r.Has("dry-run") {
 		return doc, platform.Usage("reset-preview-required")
 	}

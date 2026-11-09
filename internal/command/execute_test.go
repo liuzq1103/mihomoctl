@@ -7,9 +7,25 @@ import (
 	"testing"
 
 	"github.com/liuzq1103/mihomoctl/internal/delivery"
+	"github.com/liuzq1103/mihomoctl/internal/platform"
 	"github.com/liuzq1103/mihomoctl/internal/routing"
 	"github.com/liuzq1103/mihomoctl/internal/runtimecore"
 )
+
+func TestDryRunNeverRecoversAtExecuteGate(t *testing.T) {
+	for _, spec := range Specs() {
+		t.Run(platform.Request{Command: spec.Command}.Name(), func(t *testing.T) {
+			// Presence is authoritative even for in-process callers with empty
+			// flag values or conflicting apply/output options.
+			r := platform.Request{Command: spec.Command, Options: map[string][]string{
+				"dry-run": {}, "apply": {}, "output": {"file"}, "output-dir": {"dir"},
+			}}
+			if recoversOnMutation(r) {
+				t.Fatal("dry-run classified as a recovering mutation")
+			}
+		})
+	}
+}
 
 func TestEveryLeafReachesNativeImplementation(t *testing.T) {
 	for _, s := range Specs() {

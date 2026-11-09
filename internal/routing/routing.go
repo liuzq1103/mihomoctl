@@ -161,16 +161,25 @@ func controllerCommandWord(command []string) string {
 
 // resolveRoutingContext resolves the core configuration path and the manager
 // view, preferring explicit options exactly like the forwarded bridge argv.
+// An installation with no manager document at all is UNINITIALIZED: the
+// original refuses to bridge there (bridge.py synthesize_environment) and
+// names the two supported ways forward instead of reporting a missing file.
 func resolveRoutingContext(a platform.App, r platform.Request) (string, coreManager, error) {
 	if explicit := r.Get("config"); explicit != "" {
 		manager, err := loadCoreManager(a)
 		if err != nil {
+			if uninitializedInstallation(err) {
+				return "", manager, bridgeUnavailable()
+			}
 			return "", manager, err
 		}
 		return explicit, manager, nil
 	}
 	path, err := a.CoreConfigPath()
 	if err != nil {
+		if uninitializedInstallation(err) {
+			return "", coreManager{}, bridgeUnavailable()
+		}
 		return "", coreManager{}, err
 	}
 	manager, err := loadCoreManager(a)
@@ -178,6 +187,24 @@ func resolveRoutingContext(a platform.App, r platform.Request) (string, coreMana
 		return "", manager, err
 	}
 	return path, manager, nil
+}
+
+// uninitializedInstallation reports whether the manager document itself is
+// absent — nothing was ever initialized — as opposed to a present-but-broken
+// manager or a missing managed configuration file.
+func uninitializedInstallation(err error) bool {
+	return platform.SafeError(err) == "config-missing"
+}
+
+// bridgeUnavailable is the original's refusal for an installation holding
+// neither a V1 manager nor the 0.9.x legacy configuration: nothing can be
+// bridged until one of the two supported states exists.
+func bridgeUnavailable() error {
+	return &controlError{
+		code:       "bridge-unavailable",
+		rc:         exitUnverify,
+		safeDetail: "initialize V1 (mihomoctl init) or keep the 0.9.x configuration",
+	}
 }
 
 // dispatch runs one controller command and returns its payload.

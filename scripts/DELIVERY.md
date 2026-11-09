@@ -59,6 +59,23 @@ Check a bundle with `go run ./scripts/verifyrelease -archive BUNDLE -sha256 REVI
 Use `-execute` only for explicitly reviewed native inputs; this verifies actual CLI
 and core version execution. Cross-building does not constitute architecture acceptance.
 
+Every bundle includes `BUILD.json` with the full source commit and an explicit
+dirty-worktree flag, covered by its manifest inventory. The source archive and
+external `build-receipt.json` carry the same provenance. Official candidates must
+be built from the exact clean reviewed commit. Chinese/English usage, installation
+instructions, the command parity matrix and acceptance record accompany bundles.
+
+All previews, including program install/uninstall and service uninstall dry runs,
+are read-only. They refuse pending recovery instead of replaying journals. A real
+mutation or explicit `installation recover` performs recovery under the scope lock.
+An existing foreign launcher is never adopted, replaced or deleted; choose a
+different `--bin-dir` when another project owns the command there.
+
+Log output fails closed when a referenced credentials file is missing, unsafe or
+unreadable. This avoids exposing historical credentials whose values cannot be
+loaded for redaction. Restore the private credential file or repair the profile
+reference before reading CLI, journal or live console logs.
+
 The owned launcher executes `install/generations/<id>/bin/mihomoctl`, selecting its
 generation from the atomically replaced private `install/current` file. It is not
 a symlink. The private receipt binds the exact launcher path and bytes. The update
@@ -80,6 +97,19 @@ with no pending journal is reported as `not-installed`; corruption and drift fai
 Repeated uninstall succeeds without deleting configuration or cores, and subsequent
 installation works. A bundle's native helper can recover even after its launcher
 has been removed. Use an external copy of the bundle to reinstall/recover.
+
+A structurally invalid bootstrap journal is refused rather than guessed at: the
+journal is read back with `bootstrap-journal-invalid`, and because recovery is
+what reads it, that state blocks every later mutation and `installation recover`
+until an operator removes it. The journal lives at
+`<state-root>/delivery-bootstrap.json`; `<state-root>` is `XDG_STATE_HOME` in user
+scope and `/var/lib/mihomoctl-go` in system scope. The staged tree it names lives
+under `<data-root>/.install-bootstrap-<token>` and the pending launcher under
+`<launcher-dir>/.mihomoctl-bootstrap-<token>`. Remove the journal file and those
+two directories, then install again. A staged directory left behind by an
+interrupted publication is private and is never adopted and never guessed away,
+so it is safe to delete once no installation is pending. Removing the journal
+discards an unfinished publication; it does not delete an installed program.
 
 CI runs race/vet/full-package tests and product CLI/bundle smoke on Ubuntu 22.04
 and 24.04, amd64 natively and arm64 via explicit QEMU Ubuntu containers. Race tests

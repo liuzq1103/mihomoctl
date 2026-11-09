@@ -1,0 +1,95 @@
+{
+  "format": 1,
+  "project": "mihomoctl-go",
+  "version": "0.2.0",
+  "kind": "differential-parity",
+  "run": {
+    "started_at": "2026-11-09T02:47:26Z",
+    "run_directory": ".work/parity/20261109T024726Z",
+    "exit": 0,
+    "overall": "PASS"
+  },
+  "baseline": {
+    "project": "mihomo-userctl",
+    "commit": "f33204dd5e0c7a52d2df4df4d9aa3188b2e7f385",
+    "version": "1.5.1",
+    "archive_sha256": "4bd18a76841a86a3e239ff500da61057794f0adf92643b5a2932feacc67532ad"
+  },
+  "go": {
+    "source_sha256": "dcbcff7dd60cfc71a3b202b108001ea6b6ae7d936b16c4212fa05fbe7c86e28f",
+    "binary_sha256": "60317e73bd4c6f7f58fa4ece4aac4e5a4be25d815b95d6ecc33d5d13472712a5",
+    "source_sha256_scope": "Root *.go, go.mod, go.sum and internal/** non-test .go/.json/.yaml/.html, hashed with POSIX path separators. Recompute on Linux; a Windows recomputation differs only in the path separator.",
+    "binary_sha256_scope": "go build -trimpath of the reviewed tree, so it is reproducible from the same source."
+  },
+  "counts": {
+    "comparisons": 298,
+    "PASS": 264,
+    "ACCEPTED": 34,
+    "FAIL": 0,
+    "accepted_deviations": 64
+  },
+  "coverage": {
+    "grammar": 74,
+    "help": 70,
+    "parser-unknown": 70,
+    "uninitialized": 48,
+    "config-file": 5,
+    "managed-stopped": 19,
+    "managed": 1,
+    "files": 1,
+    "real-core": 10
+  },
+  "blocking_by_category": {
+    "data shape": 0,
+    "envelope shape": 0,
+    "envelope.command": 0,
+    "error code": 0,
+    "error detail": 0,
+    "exit code": 0,
+    "file effects": 0
+  },
+  "go_checks": {
+    "test": {
+      "status": "PASS",
+      "exit": 0,
+      "seconds": 58.266,
+      "log": ".work/parity/20261109T024726Z/go-test.log",
+      "node_acceptance": [
+        "internal/routing TestLinuxOverrideTrustedScriptEndToEnd",
+        "internal/routing TestLinuxOverrideFlClashAdaptationEndToEnd"
+      ],
+      "pty_acceptance": [
+        "TestConsolePTYAllPagesResizeUTF8AndRestore"
+      ]
+    },
+    "vet": {
+      "status": "PASS",
+      "exit": 0,
+      "seconds": 16.529,
+      "log": ".work/parity/20261109T024726Z/go-vet.log"
+    },
+    "race": {
+      "status": "UNAVAILABLE",
+      "reason": "No cc/gcc on the verifier PATH; no race PASS is claimed. Race coverage comes from the amd64 CI job of release-validation.yml."
+    }
+  },
+  "environment": {
+    "os": "Ubuntu 22.04 (WSL), non-root",
+    "go": "go1.23.12 linux/amd64",
+    "node": "v20.18.1",
+    "core": "reviewed local Mihomo v1.19.33 linux/amd64, no acquisition"
+  },
+  "gaps": [
+    "Help prose/layout is retained raw but only advertised flags and envelope structure are compared",
+    "Four Go-only installation leaves have no Python CLI counterpart",
+    "No privileged systemd/TUN/SSH, interactive TUI, remote subscriptions or release network acquisition",
+    "The accepted textual/JSON refusal reflects the baseline's missing optional Textual environment, not functional Textual/TTY parity",
+    "Real-core wall-clock durations and backend diagnostic prose remain exact; no generic error-code or field-name equivalence mapping"
+  ],
+  "notes": [
+    "PASS means strict equivalence for that case. A refusal equivalence does not mean the operation succeeded.",
+    "ACCEPTED means a documented authorized deviation only, not equivalence.",
+    "Any difference that matches no documented deviation is a blocking FAIL.",
+    "The differential harness is a local review instrument and is not part of the repository; the recorded result is this file."
+  ]
+}

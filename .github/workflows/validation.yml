@@ -66,7 +66,7 @@ jobs:
             -e PATH=/usr/local/go/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             "ubuntu:$UBUNTU" sh -ec '
               apt-get update
-              apt-get install -y ca-certificates gcc libc6-dev git
+              apt-get install -y ca-certificates gcc libc6-dev git nodejs
               git config --global --add safe.directory /work
               sh scripts/ci-linux.sh arm64
             '

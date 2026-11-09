@@ -183,7 +183,22 @@ func TestPrivilegedSystemdTunAndSSH(t *testing.T) {
 		f.rootRun(t, []string{"service", "status"}, nil, "FAIL")
 	})
 	privilegedStep(t, "service-uninstall", func(t *testing.T) {
-		f.rootRun(t, []string{"service", "uninstall"}, nil, "PASS")
+		before, err := platform.ReadPrivate(unitPath(a))
+		if err != nil {
+			t.Fatal(err)
+		}
+		preview := f.rootRun(t, []string{"service", "uninstall"}, map[string][]string{"dry-run": {}}, "PASS")
+		if preview.Command != "service-uninstall-preview" || preview.Data["dry_run"] != true {
+			t.Fatal("uninstall preview contract", preview)
+		}
+		after, err := platform.ReadPrivate(unitPath(a))
+		if err != nil || !bytesEqual(before, after) {
+			t.Fatal("uninstall preview changed unit", err)
+		}
+		removed := f.rootRun(t, []string{"service", "uninstall"}, nil, "PASS")
+		if removed.Command != "service-uninstall" {
+			t.Fatal("uninstall command contract", removed)
+		}
 		if _, e = os.Lstat(unitPath(a)); !os.IsNotExist(e) {
 			t.Fatal("owned unit remains after uninstall", e)
 		}

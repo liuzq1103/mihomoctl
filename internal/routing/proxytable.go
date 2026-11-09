@@ -544,7 +544,9 @@ func automaticCandidates(dir *directory, start string) []map[string]any {
 	}
 	queue := []queued{{start, []any{start}}}
 	seen := map[string]bool{start: true}
-	var result []map[string]any
+	// Non-nil even when empty: the parity contract renders this field as
+	// [], never null.
+	result := []map[string]any{}
 	for len(queue) > 0 {
 		item := queue[0]
 		queue = queue[1:]
@@ -579,8 +581,10 @@ func automaticCandidates(dir *directory, start string) []map[string]any {
 }
 
 // affectedGroups: groups whose current chain passes through the named group.
-func affectedGroups(dir *directory, group string) []string {
-	var names []string
+// Returns []any for payload uniformity, non-nil so the field renders as []
+// rather than null.
+func affectedGroups(dir *directory, group string) []any {
+	names := []any{}
 	for _, name := range dir.rowOrder {
 		if name == group {
 			continue
@@ -600,7 +604,11 @@ func affectedGroups(dir *directory, group string) []string {
 			}
 		}
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool {
+		a, _ := names[i].(string)
+		b, _ := names[j].(string)
+		return a < b
+	})
 	return names
 }
 

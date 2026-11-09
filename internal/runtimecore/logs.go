@@ -191,7 +191,7 @@ func verifyLogBackend(ctx context.Context, a platform.App, m manager) error {
 func logsWithBackend(ctx context.Context, a platform.App, r platform.Request, read journalReader, verify func(context.Context, platform.App, manager) error) (platform.Envelope, error) {
 	doc := platform.Document(r.Name(), a.Scope.Name, nil)
 	if r.Has("follow") && requestJSON(r) {
-		return doc, platform.Usage("logs-follow-json")
+		return doc, platform.UsageDetail("logs-follow-json", "--follow cannot produce a single JSON document", "")
 	}
 	if e := ctx.Err(); e != nil {
 		return doc, e
@@ -199,7 +199,7 @@ func logsWithBackend(ctx context.Context, a platform.App, r platform.Request, re
 	n := 50
 	if raw := r.Get("lines"); raw != "" {
 		if _, e := fmt.Sscanf(raw, "%d", &n); e != nil || fmt.Sprint(n) != raw || n < 1 || n > 10000 {
-			return doc, platform.Usage("logs-lines-invalid")
+			return doc, platform.UsageDetail("logs-lines-invalid", "--lines must be 1-10000", "")
 		}
 	}
 	x, e := resolve(a, "")
@@ -230,7 +230,7 @@ func logsWithBackend(ctx context.Context, a platform.App, r platform.Request, re
 		return doc, e
 	}
 	if _, e = os.Lstat(path); os.IsNotExist(e) {
-		return doc, platform.Fail("logs-unavailable")
+		return doc, platform.UsageDetail("logs-unavailable", "no process logs yet; backend=process", "")
 	}
 	raw, start, e := readLogWindow(path)
 	if e != nil {

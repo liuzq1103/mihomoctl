@@ -17,7 +17,7 @@ func Execute(ctx context.Context, system bool, r platform.Request) platform.Enve
 	if system {
 		scope = "system"
 	}
-	name := r.Name()
+	name := r.TopLevel()
 	if name == "" {
 		name = "mihomoctl"
 	}
@@ -29,8 +29,7 @@ func Execute(ctx context.Context, system bool, r platform.Request) platform.Enve
 		if err := platform.WithLock(ctx, s, func() error { return nil }); err != nil {
 			return platform.Failure(name, scope, err)
 		}
-	}
-	if !recoversOnMutation(r) {
+	} else {
 		if err := platform.CheckPending(s); err != nil {
 			return platform.Failure(name, scope, err)
 		}
@@ -66,13 +65,18 @@ func Execute(ctx context.Context, system bool, r platform.Request) platform.Enve
 }
 
 func recoversOnMutation(r platform.Request) bool {
+	// A preview must never enter WithLock: its recovery hooks can complete
+	// destructive operations before the command's own dry-run check runs.
+	if r.Has("dry-run") {
+		return false
+	}
 	switch r.Name() {
 	case "init", "start", "stop", "restart", "profile-set-default", "core-adopt", "service-install", "service-start", "service-stop", "service-restart", "service-uninstall", "tun-enable", "tun-disable", "integration-install", "integration-remove", "controller-initialize", "controller-setup", "subscription-preview", "subscription-apply", "installation-install", "installation-uninstall", "installation-recover":
 		return true
 	case "reset", "migrate", "manual", "override", "health-check":
 		return r.Has("apply")
 	case "update", "core-install", "core-update":
-		return !r.Has("dry-run")
+		return true
 	case "env-export":
 		return r.Get("output") != ""
 	case "integration-export", "export":

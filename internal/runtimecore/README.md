@@ -201,3 +201,13 @@ reset and malformed-config repair, uninstalls the service, and removes only
 receipt-owned fixtures. It never enables a service or changes the host SSH
 configuration. Failure to prove cleanup ownership retains the namespace and
 fails the test. Run only one such suite per disposable VM.
+
+Public parity notes: native doctor checks `dependency-go-binary` (the running
+executable), replacing the baseline's `dependency-python3`; it never requires a
+compiler or Python. This is an approved native runtime implementation choice;
+the differential harness must explicitly allowlist this check-name replacement.
+Init and uninitialized status retain the pinned v1.5.1 field sets without extra
+state/scope metadata or runtime placeholders. Process identity receipts retain the native
+boot ID and exact argv internally; public status exposes the baseline identity
+keys only. Manager missing-file diagnostics are translated locally and leave
+shared platform/routing `config-missing` handling intact.

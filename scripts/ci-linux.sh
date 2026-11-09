@@ -4,13 +4,13 @@ set -eu
 expected=${1:?expected Go architecture}
 [ "$(go env GOARCH)" = "$expected" ]
 case "$expected:$(uname -m)" in amd64:x86_64|arm64:aarch64) ;; *) echo 'architecture execution mismatch' >&2; exit 1;; esac
-go vet ./...
+race_flag=
 if [ "$expected" = amd64 ]; then
-    go test -race -count=1 ./...
+    race_flag=-race
 else
     echo 'arm64 QEMU: ThreadSanitizer VMA layout is unsupported; race testing is NOT executed here. amd64 CI supplies race coverage.' >&2
-    go test -count=1 ./...
 fi
+go vet ./...
 go build -o /tmp/mihomoctl-go-ci .
 go build -o /tmp/mihomoctl-go-delivery ./scripts/deliveryctl
 # Product dispatch is part of acceptance: this fails if the root is still only a TUI.
@@ -33,11 +33,34 @@ done
 offline="/tmp/mihomoctl-go-candidate/mihomoctl-go-0.2.0-offline-linux-$expected.tar.gz"
 basic="/tmp/mihomoctl-go-candidate/mihomoctl-go-0.2.0-basic-linux-$expected.tar.gz"
 if [ "$(id -u)" -eq 0 ]; then
+    # A root-only test run skips the user-scope mutation fixtures. Run root
+    # ownership tests first, then the full suite under a distinct account
+    # with a reviewed core of the architecture actually being executed.
+    go test $race_flag -count=1 ./...
+    useradd --create-home --user-group go-acceptance
+    runuser -u go-acceptance -- git config --global --add safe.directory "$PWD"
+    install -d -o go-acceptance -g go-acceptance -m 0700 /home/go-acceptance/core
+    tar -xOf "$offline" core/mihomo > /home/go-acceptance/core/mihomo
+    chown go-acceptance:go-acceptance /home/go-acceptance/core/mihomo
+    chmod 0700 /home/go-acceptance/core/mihomo
+    runuser -u go-acceptance -- env PATH="$PATH" \
+        GOPATH=/home/go-acceptance/go \
+        GOCACHE=/home/go-acceptance/.cache/go-build \
+        GOMODCACHE=/home/go-acceptance/go/pkg/mod \
+        MIHOMOCTL_GO_TEST_CORE=/home/go-acceptance/core/mihomo \
+        go test $race_flag -count=1 -timeout 15m ./...
     useradd --create-home --user-group bundle-smoke
     install -o bundle-smoke -g bundle-smoke -m 600 "$offline" /home/bundle-smoke/offline.tar.gz
     install -o bundle-smoke -g bundle-smoke -m 600 "$basic" /home/bundle-smoke/basic.tar.gz
     su -s /bin/sh bundle-smoke -c "sh /work/scripts/smoke-bundle.sh /home/bundle-smoke/offline.tar.gz /home/bundle-smoke/basic.tar.gz"
 else
+    core_work=$(mktemp -d "$HOME/.mihomoctl-go-ci-core.XXXXXXXX")
+    # Only this newly allocated directory is eligible for cleanup.
+    trap 'rm -f -- "$core_work/mihomo"; rmdir -- "$core_work"' EXIT HUP INT TERM
+    chmod 0700 "$core_work"
+    tar -xOf "$offline" core/mihomo > "$core_work/mihomo"
+    chmod 0700 "$core_work/mihomo"
+    MIHOMOCTL_GO_TEST_CORE="$core_work/mihomo" go test $race_flag -count=1 -timeout 15m ./...
     sh scripts/smoke-bundle.sh "$offline" "$basic"
 fi
 mkdir /tmp/mihomoctl-go-bundle

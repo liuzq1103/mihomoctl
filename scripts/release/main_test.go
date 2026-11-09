@@ -2,10 +2,46 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestBuildProvenanceBindsCommitAndDirtyInputs(t *testing.T) {
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	input := filepath.Join(dir, "source.go")
+	if err := os.WriteFile(input, []byte("package source\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "source.go")
+	git("-c", "user.name=Build Test", "-c", "user.email=build@example.invalid", "commit", "-qm", "fixture")
+	clean, err := readSourceProvenance(dir)
+	if err != nil || len(clean.Commit) != 40 || clean.Dirty {
+		t.Fatal(clean, err)
+	}
+	for _, name := range []string{"source.go", "untracked.go"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("package changed\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		dirty, err := readSourceProvenance(dir)
+		if err != nil || dirty.Commit != clean.Commit || !dirty.Dirty {
+			t.Fatal("modified/untracked inputs misrepresented as reviewed commit", dirty, err)
+		}
+	}
+	if _, err := readSourceProvenance(t.TempDir()); err == nil {
+		t.Fatal("non-repository was assigned a source commit")
+	}
+}
 
 func TestOptionalPayloadsAreExplicitAndInventoried(t *testing.T) {
 	source := t.TempDir()

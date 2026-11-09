@@ -13,7 +13,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,12 +48,25 @@ type Envelope struct {
 }
 type Error struct {
 	Code, Detail string
+	Remediation  string
 	Exit         int
 }
 
 func (e *Error) Error() string { return e.Code }
 func Fail(code string) error   { return &Error{Code: code, Exit: 1} }
 func Usage(code string) error  { return &Error{Code: code, Exit: 2} }
+
+// UsageDetail carries the human-readable diagnostic and the remediation hint
+// of a usage or permission refusal. The baseline publishes both fields, so
+// the JSON envelope keeps them as well.
+func UsageDetail(code, detail, remediation string) error {
+	return &Error{Code: code, Detail: detail, Remediation: remediation, Exit: 2}
+}
+
+// FailDetail reports an observed failure with its diagnostic text.
+func FailDetail(code, detail string) error {
+	return &Error{Code: code, Detail: detail, Exit: 1}
+}
 func Document(command, scope string, data map[string]any) Envelope {
 	if data == nil {
 		data = map[string]any{}
@@ -66,6 +81,7 @@ func Failure(command, scope string, err error) Envelope {
 	if errors.As(err, &p) {
 		d.Code = p.Code
 		d.Detail = p.Detail
+		d.Remediation = p.Remediation
 		if p.Exit == 1 {
 			e.Overall = "FAIL"
 		}
@@ -102,6 +118,16 @@ func (r Request) Get(k string) string {
 }
 func (r Request) Has(k string) bool { _, ok := r.Options[k]; return ok }
 func (r Request) Name() string      { return strings.Join(r.Command, "-") }
+
+// TopLevel is the requested command word, as the original reports it in a
+// failure envelope: a refusal for "profile list" is reported under
+// "profile", while a successful result keeps the leaf name.
+func (r Request) TopLevel() string {
+	if len(r.Command) == 0 {
+		return ""
+	}
+	return r.Command[0]
+}
 func (r Request) Arg(n int) string {
 	if n < len(r.Args) {
 		return r.Args[n]
@@ -351,11 +377,14 @@ func StrictYAML(b []byte) (*yaml.Node, error) {
 	var root yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	if e := dec.Decode(&root); e != nil {
-		return nil, Usage("config-invalid")
+		if e == io.EOF {
+			return nil, UsageDetail("config-invalid", "expected exactly one YAML document", "")
+		}
+		return nil, UsageDetail("config-invalid", yamlSyntaxDiagnostic(b, e), "")
 	}
 	var extra yaml.Node
 	if dec.Decode(&extra) != io.EOF {
-		return nil, Usage("config-multiple-documents")
+		return nil, UsageDetail("config-multiple-documents", "expected exactly one YAML document", "")
 	}
 	count := 0
 	var walk func(*yaml.Node, int) error
@@ -365,14 +394,17 @@ func StrictYAML(b []byte) (*yaml.Node, error) {
 			return Usage("config-too-complex")
 		}
 		if n.Kind == yaml.AliasNode || n.Anchor != "" {
-			return Usage("yaml-alias-disabled")
+			return UsageDetail("yaml-alias-disabled", fmt.Sprintf("YAML anchors/aliases are not allowed (line %d column %d)", n.Line, n.Column), "")
 		}
 		if n.Kind == yaml.MappingNode {
 			seen := map[string]bool{}
 			for i := 0; i < len(n.Content); i += 2 {
 				k := n.Content[i]
-				if k.Kind != yaml.ScalarNode || k.Tag != "!!str" || seen[k.Value] {
-					return Usage("yaml-duplicate-or-invalid-key")
+				if k.Kind != yaml.ScalarNode || k.Tag != "!!str" {
+					return UsageDetail("yaml-duplicate-or-invalid-key", fmt.Sprintf("unhashable YAML key at line %d", k.Line), "")
+				}
+				if seen[k.Value] {
+					return UsageDetail("yaml-duplicate-or-invalid-key", fmt.Sprintf("duplicate YAML key at line %d column %d", k.Line, k.Column), "")
 				}
 				seen[k.Value] = true
 			}
@@ -388,9 +420,46 @@ func StrictYAML(b []byte) (*yaml.Node, error) {
 		return nil, e
 	}
 	if len(root.Content) != 1 || root.Content[0].Kind != yaml.MappingNode {
-		return nil, Usage("config-must-be-mapping")
+		return nil, UsageDetail("config-must-be-mapping", "core configuration must be a YAML mapping", "")
 	}
 	return &root, nil
+}
+
+var yamlErrorLine = regexp.MustCompile(`(?:^| )line ([0-9]+):`)
+
+// yamlSyntaxDiagnostic reports source coordinates without echoing YAML values.
+// yaml.v3 reports the last token's line for an unfinished flow collection;
+// the actual error position in that case is the end of the input.
+func yamlSyntaxDiagnostic(input []byte, problem error) string {
+	line, column := 1, 1
+	message := problem.Error()
+	if match := yamlErrorLine.FindStringSubmatch(message); len(match) == 2 {
+		line, _ = strconv.Atoi(match[1])
+	}
+	if strings.Contains(message, "expected node content") || strings.Contains(message, "unexpected end of stream") {
+		line = bytes.Count(input, []byte{'\n'}) + 1
+		if last := bytes.LastIndexByte(input, '\n'); last >= 0 {
+			column = len(input) - last
+		} else {
+			column = len(input) + 1
+		}
+	}
+	return fmt.Sprintf("YAML error (line %d column %d)", line, column)
+}
+
+// ConfigDiagnostic projects strict parser refusals onto the public baseline
+// config-invalid code while preserving the primitive's safe source position.
+// Internal callers can still distinguish the original safety error codes.
+func ConfigDiagnostic(err error) error {
+	var problem *Error
+	if !errors.As(err, &problem) {
+		return err
+	}
+	switch problem.Code {
+	case "config-invalid", "config-multiple-documents", "config-must-be-mapping", "yaml-duplicate-or-invalid-key", "yaml-alias-disabled":
+		return UsageDetail("config-invalid", problem.Detail, problem.Remediation)
+	}
+	return err
 }
 func DecodeYAML(b []byte) (map[string]any, error) {
 	n, e := StrictYAML(b)

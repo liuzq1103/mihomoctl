@@ -190,8 +190,8 @@ func TestLinuxBootstrapAndUninstall(t *testing.T) {
 	if _, e := readReceipt(a); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := Bootstrap(context.Background(), a, source, bin, false); e == nil {
-		t.Fatal("second bootstrap overwrote command")
+	if result, e := Bootstrap(context.Background(), a, source, bin, false); e != nil || result["changed"] != false {
+		t.Fatal("second bootstrap must preserve the exact owned installation", result, e)
 	}
 	if _, e := Uninstall(context.Background(), a, true); e != nil {
 		t.Fatal(e)

@@ -336,6 +336,9 @@ func serviceLifecycle(ctx context.Context, a platform.App, x resolved, action st
 }
 func serviceCommand(ctx context.Context, a platform.App, r platform.Request) (platform.Envelope, error) {
 	doc := platform.Document(r.Name(), a.Scope.Name, nil)
+	if r.Name() == "service-uninstall" && r.Has("dry-run") {
+		doc.Command = "service-uninstall-preview"
+	}
 	x, e := resolve(a, "")
 	if e != nil {
 		return doc, e

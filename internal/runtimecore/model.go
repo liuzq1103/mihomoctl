@@ -4,8 +4,10 @@ package runtimecore
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -93,7 +95,7 @@ func cleanString(s string) bool {
 func absolute(s string) bool { return cleanString(s) && filepath.IsAbs(s) && filepath.Clean(s) == s }
 func decode(b []byte, v any) error {
 	if _, e := platform.StrictYAML(b); e != nil {
-		return e
+		return platform.ConfigDiagnostic(e)
 	}
 	d := yaml.NewDecoder(bytes.NewReader(b))
 	d.KnownFields(true)
@@ -106,7 +108,7 @@ func loadManager(a platform.App) (manager, error) {
 	m := manager{Core: coreSettings{Backend: "process"}, Default: "default", Tun: tunSettings{Device: "mihomo0"}}
 	b, e := platform.ReadPrivate(a.Scope.ManagerPath())
 	if e != nil {
-		return m, e
+		return m, managerReadError(a.Scope.ManagerPath(), e)
 	}
 	if e = decode(b, &m); e != nil {
 		return m, e
@@ -114,7 +116,7 @@ func loadManager(a platform.App) (manager, error) {
 	// yaml.v3 permits some scalar coercions; the public manager schema does not.
 	raw, e := platform.DecodeYAML(b)
 	if e != nil {
-		return m, e
+		return m, platform.ConfigDiagnostic(e)
 	}
 	if _, ok := raw["version"].(int); !ok {
 		return m, invalid()
@@ -171,7 +173,71 @@ func loadManager(a platform.App) (manager, error) {
 			}
 		}
 	}
+	for name, p := range m.Profiles {
+		m.Profiles[name] = defaults(p)
+	}
 	return m, validateManager(a, m)
+}
+
+// Translate only manager reads: routing and credential readers rely on the
+// shared primitive's config-missing code remaining unchanged.
+func managerReadError(path string, err error) error {
+	var original *platform.Error
+	if !errors.As(err, &original) {
+		return err
+	}
+	e := *original
+	if e.Code == "config-missing" {
+		e.Code, e.Exit = "config-invalid", 2
+		reason := "unreadable"
+		if st, statErr := os.Lstat(path); os.IsNotExist(statErr) {
+			reason = "No such file or directory"
+		} else if os.IsPermission(statErr) {
+			reason = "Permission denied"
+		} else if statErr == nil && !st.Mode().IsRegular() {
+			e.Code, e.Detail = "unsafe-file", "not a regular file: "+path
+			return &e
+		} else if statErr == nil {
+			reason = "Permission denied"
+		}
+		e.Detail = fmt.Sprintf("missing or unreadable: %s (%s)", path, reason)
+	} else if e.Detail == "" {
+		switch e.Code {
+		case "symlink-refused":
+			e.Detail = "symlink rejected: " + path
+		case "unsafe-file":
+			e.Detail = "not a regular file: " + path
+		case "owner-mismatch":
+			e.Detail = "file is not owned by the current user: " + path
+		case "private-permissions-required":
+			e.Detail = "file must have mode 600: " + path
+		}
+	}
+	return &e
+}
+
+// MarshalYAML emits the normalized manager schema, including profile defaults,
+// while omitting the implicit disabled/default-device TUN authorization.
+func (m manager) MarshalYAML() (any, error) {
+	type plain manager
+	copy := plain(m)
+	copy.Profiles = make(map[string]profile, len(m.Profiles))
+	for name, p := range m.Profiles {
+		copy.Profiles[name] = defaults(p)
+	}
+	var node yaml.Node
+	if err := node.Encode(copy); err != nil {
+		return nil, err
+	}
+	if !m.Tun.Enabled && (m.Tun.Device == "" || m.Tun.Device == "mihomo0") {
+		for i := 0; i < len(node.Content); i += 2 {
+			if node.Content[i].Value == "tun" {
+				node.Content = append(node.Content[:i], node.Content[i+2:]...)
+				break
+			}
+		}
+	}
+	return &node, nil
 }
 func validateManager(a platform.App, m manager) error {
 	if m.Version != 1 || !absolute(m.Core.Binary) || !absolute(m.Core.Config) || !a.Scope.Contains(m.Core.Config) || len(m.Profiles) == 0 {
@@ -306,7 +372,7 @@ func resolve(a platform.App, name string) (resolved, error) {
 	}
 	p, ok := x.Manager.Profiles[name]
 	if !ok {
-		return x, platform.Usage("profile-unknown")
+		return x, platform.UsageDetail("profile-unknown", fmt.Sprintf("'%s'", name), "")
 	}
 	x.Name = name
 	x.Profile = defaults(p)
@@ -316,7 +382,7 @@ func resolve(a platform.App, name string) (resolved, error) {
 	}
 	x.Config, e = platform.DecodeYAML(x.Text)
 	if e != nil {
-		return x, e
+		return x, platform.ConfigDiagnostic(e)
 	}
 	x.Endpoints, x.Controller, e = parseEndpoints(x.Config, a.Scope.System, x.Manager.Allow)
 	if e != nil {

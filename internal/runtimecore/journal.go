@@ -83,7 +83,7 @@ func journalWithBackend(ctx context.Context, a platform.App, since, until string
 	} else {
 		path := filepath.Join(a.Scope.StateRoot, "logs", "mihomo.log")
 		if _, e = os.Lstat(path); os.IsNotExist(e) {
-			return fail(platform.Fail("logs-unavailable"))
+			return fail(platform.UsageDetail("logs-unavailable", "no process logs yet; backend=process", ""))
 		}
 		raw, start, e := readLogWindow(path)
 		if e != nil {

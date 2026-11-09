@@ -83,7 +83,11 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 func (c *realCli) run(stdin []byte, args ...string) (Envelope, error) {
 	p, err := command.Parse(args, bytes.NewReader(stdin), io.Discard, io.Discard)
 	if err != nil {
-		return bridgeEnvelope(platform.Failure("mihomoctl", scopeName(c.system), err))
+		name := p.Request.TopLevel()
+		if name == "" {
+			name = "mihomoctl"
+		}
+		return bridgeEnvelope(platform.Failure(name, scopeName(c.system), err))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()

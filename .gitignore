@@ -10,3 +10,10 @@ dist/
 # Local Go toolchain caches if placed here
 .gocache/
 .work/
+
+# Downloaded source-review evidence used by the draft workflow.
+.review/
+
+# Local differential verification harness. It is a review instrument, not part of
+# the product: the published result is recorded in .github/parity-evidence.json.
+scripts/parity/

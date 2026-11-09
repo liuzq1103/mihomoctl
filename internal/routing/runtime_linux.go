@@ -385,18 +385,33 @@ func validationIdentity(cmd *execCmd, uid int) {
 }
 
 // validationResourceOwned enforces the ownership contract for resources
-// staged into the isolated validation tree: the acting account owns the file
-// with no group/other access, or — system scope only — root owns it without
-// group/other write, mirroring the trusted-executable ancestry rule.
+// staged into the isolated validation tree, aligned with the runtime core's
+// accepted service/root ownership rules (openCoreResource in
+// system_linux.go): in system scope the file may belong to root, the acting
+// account, or the dedicated service account, with no group/other write — so
+// the delivered root-owned 0640 configuration and service-owned 0600
+// resources both validate. User scope stays strict: only the acting
+// account's own files, with no group/other access at all.
 func validationResourceOwned(st os.FileInfo, system bool) bool {
+	return validationResourceOwnedBy(st, system, serviceAccountUID())
+}
+
+// validationResourceOwnedBy is the pure ownership predicate; the service
+// account uid is a parameter so tests can cover every branch against
+// synthetic stat data without provisioning or mutating host accounts.
+func validationResourceOwnedBy(st os.FileInfo, system bool, serviceUID int) bool {
 	s, ok := st.Sys().(*syscall.Stat_t)
 	if !ok {
 		return false
 	}
-	if int(s.Uid) == os.Geteuid() {
-		return st.Mode().Perm()&0077 == 0
+	if !system {
+		return int(s.Uid) == os.Geteuid() && st.Mode().Perm()&0077 == 0
 	}
-	return system && int(s.Uid) == 0 && st.Mode().Perm()&0022 == 0
+	if st.Mode().Perm()&0022 != 0 {
+		return false
+	}
+	uid := int(s.Uid)
+	return uid == 0 || uid == os.Geteuid() || uid == serviceUID
 }
 
 // fileOwnedPrivate reports whether a staged file belongs to the acting account

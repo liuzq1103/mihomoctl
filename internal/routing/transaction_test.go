@@ -2,6 +2,7 @@ package routing
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -330,6 +331,196 @@ func TestTransactionRecoversEmptyJournal(t *testing.T) {
 	}
 	if entries := backupsEntries(t, scope); len(entries) != 0 {
 		t.Fatalf("empty journal retained: %v", entries)
+	}
+}
+
+// TestTransactionWriteFailurePreservesOriginal pins the txAtomicReplace
+// error-propagation fix: a chmod or write failure after the temporary exists
+// must abort BEFORE the rename — never publish a truncated file and report
+// success. The write path is forced to fail partway through the payload.
+func TestTransactionWriteFailurePreservesOriginal(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, target, "original", 0600)
+
+	saved := txTempWrite
+	t.Cleanup(func() { txTempWrite = saved })
+
+	tx, err := beginFileTransaction(scope, "test-writefail", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The seam is active for the publication only; the rollback below must
+	// run through the real write path.
+	txTempWrite = func(temporary *os.File, mode os.FileMode, data []byte) error {
+		if len(data) > 2 {
+			if _, err := temporary.Write(data[:len(data)/2]); err != nil {
+				return err
+			}
+		}
+		return errors.New("forced write failure")
+	}
+	publishErr := tx.writeBytes(target, []byte("replacement content"), 0600)
+	txTempWrite = saved
+	if publishErr == nil {
+		t.Fatal("forced write failure reported as success")
+	}
+	if readTxFile(t, target) != "original" {
+		t.Fatal("destination modified despite write failure")
+	}
+	// The abandoned temporary is gone; only the configuration remains.
+	entries, err := os.ReadDir(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.yaml" {
+		var names []string
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("temporary litter after write failure: %v", names)
+	}
+	// The transaction rolls back cleanly (nothing was published).
+	if err := tx.rollback(true); err != nil {
+		t.Fatalf("rollback after write failure: %v", err)
+	}
+	if readTxFile(t, target) != "original" {
+		t.Fatal("original content lost")
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 0 {
+		t.Fatalf("journals retained after clean rollback: %v", entries)
+	}
+}
+
+// TestRollbackRefusesDirectoryAtCreatedFilePath pins the foreign-contents
+// hardening: when a directory replaces a file this transaction created after
+// the crash, the drift preflight cannot speak to it (it only guards regular
+// files), so rollback must REFUSE and retain the journal rather than
+// recursively deleting the directory's contents.
+func TestRollbackRefusesDirectoryAtCreatedFilePath(t *testing.T) {
+	scope := txScope(t)
+	// A path inside directories the transaction itself has to create, so
+	// the record carries CreatedDirs as well.
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "extra", "config.yaml")
+	tx, err := beginFileTransaction(scope, "test-dirreplaced", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("candidate"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Crash, then a foreign directory replaces the created file.
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	canary := filepath.Join(target, "foreign.txt")
+	writeTxFile(t, canary, "precious", 0600)
+
+	mustCode(t, recoverTransactions(scope, false), "rollback-failed")
+	if data, err := os.ReadFile(canary); err != nil || string(data) != "precious" {
+		t.Fatalf("foreign contents destroyed: %v %q", err, data)
+	}
+	if entries := backupsEntries(t, scope); len(entries) == 0 {
+		t.Fatal("refused rollback dropped the journal")
+	}
+}
+
+// TestRollbackRefusesDirectoryAtSymlinkPath is the symlink-restore variant,
+// reached where such records can actually occur: journal-driven recovery
+// (the engine's own delete refuses symlink destinations, so a symlink record
+// only arrives as journal input). A directory that replaced the journaled
+// symlink's path after the crash is foreign, and restoring the symlink must
+// refuse instead of deleting it recursively.
+func TestRollbackRefusesDirectoryAtSymlinkPath(t *testing.T) {
+	scope := txScope(t)
+	link := filepath.Join(scope.ConfigRoot, "mihomo", "link.yaml")
+	if err := os.Symlink(filepath.Join(filepath.Dir(scope.StateRoot), "victim"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// Crash leaves a pending journal whose delete record restored a symlink;
+	// afterwards a foreign directory replaces the link's path.
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(link, 0700); err != nil {
+		t.Fatal(err)
+	}
+	canary := filepath.Join(link, "foreign.txt")
+	writeTxFile(t, canary, "precious", 0600)
+	root := filepath.Join(scope.StateRoot, "backups", "test-linkdir-abcdef012345")
+	if err := platform.PrivateDir(root); err != nil {
+		t.Fatal(err)
+	}
+	document := map[string]any{
+		"id": "test-linkdir-abcdef012345", "name": "test-linkdir", "state": "pending",
+		"staging": "",
+		"journal": []map[string]any{{
+			"op": "delete", "path": link, "type": "symlink",
+			"mode": "605", "symlink_target": filepath.Join(filepath.Dir(scope.StateRoot), "victim"),
+		}},
+	}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := platform.AtomicWrite(filepath.Join(root, "journal.json"), append(raw, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mustCode(t, recoverTransactions(scope, false), "rollback-failed")
+	if data, err := os.ReadFile(canary); err != nil || string(data) != "precious" {
+		t.Fatalf("foreign contents destroyed: %v %q", err, data)
+	}
+	if entries := backupsEntries(t, scope); len(entries) == 0 {
+		t.Fatal("refused rollback dropped the journal")
+	}
+}
+
+// TestRecoveryPreflightsEveryDestinationBeforeUndo pins the multi-record
+// ordering: the type preflight walks ALL journaled destinations BEFORE any
+// record is undone. A foreign directory at the LAST record's path must stop
+// the rollback before the FIRST record is reversed — otherwise recovery would
+// trade a consistent crashed state for a half-undone one while still
+// reporting a refusal.
+func TestRecoveryPreflightsEveryDestinationBeforeUndo(t *testing.T) {
+	scope := txScope(t)
+	primary := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, primary, "original", 0600)
+	tx, err := beginFileTransaction(scope, "test-driftgate", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(primary, []byte("published"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	secondary := filepath.Join(scope.DataRoot, "extra", "new-file")
+	if err := tx.writeBytes(secondary, []byte("created"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Crash, then a foreign directory replaces the second record's path.
+	if err := os.Remove(secondary); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(secondary, 0700); err != nil {
+		t.Fatal(err)
+	}
+	canary := filepath.Join(secondary, "foreign.txt")
+	writeTxFile(t, canary, "precious", 0600)
+
+	mustCode(t, recoverTransactions(scope, false), "rollback-failed")
+	// No record may have been undone before the refusal: the earlier
+	// publication is still the live bytes (its backup restore never ran).
+	if data := readTxFile(t, primary); data != "published" {
+		t.Fatalf("earlier record was undone before the refusal: primary = %q", data)
+	}
+	if data, err := os.ReadFile(canary); err != nil || string(data) != "precious" {
+		t.Fatalf("foreign contents destroyed: %v %q", err, data)
+	}
+	if entries := backupsEntries(t, scope); len(entries) == 0 {
+		t.Fatal("refused rollback dropped the journal")
 	}
 }
 
