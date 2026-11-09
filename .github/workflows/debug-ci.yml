@@ -1,0 +1,99 @@
+name: CI environment debug
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-amd64:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['22.04', '24.04']
+    runs-on: ubuntu-${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - name: Environment facts
+        run: |
+          uname -a
+          cat /proc/1/comm
+          id
+          cat /proc/sys/kernel/random/boot_id
+          ls -l /usr/bin/sleep /bin/sleep 2>&1
+          readlink -f /usr/bin/sleep
+      - name: Routing fixture test WITHOUT -race
+        run: go test ./internal/routing -run 'TestControllerStatusEnvelope' -count=1 -v
+      - name: Routing fixture test WITH -race
+        run: go test -race ./internal/routing -run 'TestControllerStatusEnvelope' -count=1 -v
+      - name: fd probe
+        run: go run ./scripts/debug/fdprobe
+  qemu-arm64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: QEMU arm64 real-core identity probe
+        run: |
+          docker pull --platform linux/arm64 golang:1.23
+          toolchain=$(docker create --platform linux/arm64 golang:1.23)
+          mkdir -p "$RUNNER_TEMP/toolchain"
+          docker cp "$toolchain:/usr/local/go" "$RUNNER_TEMP/toolchain/go"
+          docker rm "$toolchain"
+          curl -fsSL -o mihomo-arm64.gz https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-arm64-compatible-v1.19.33.gz
+          sha256sum mihomo-arm64.gz
+          docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work \
+            -v "$RUNNER_TEMP/toolchain/go:/usr/local/go:ro" \
+            -e PATH=/usr/local/go/bin:/usr/sbin:/usr/bin:/sbin:/bin "ubuntu:24.04" sh -ec '
+              set -e
+              gunzip -c mihomo-arm64.gz > /tmp/mihomo && chmod 700 /tmp/mihomo
+              apt-get update -qq >/dev/null && apt-get install -y -qq ca-certificates gcc libc6-dev git >/dev/null
+              git config --global --add safe.directory /work
+              printf "external-controller: 127.0.0.1:19090\nsecret: diag\n" > /tmp/mihomo-config.yaml
+              /tmp/mihomo -d /tmp -f /tmp/mihomo-config.yaml >/tmp/mihomo.log 2>&1 &
+              pid=$!
+              sleep 3
+              echo "== mihomo first read =="
+              cat /proc/$pid/stat
+              readlink /proc/$pid/exe
+              tr "\0" "|" < /proc/$pid/cmdline; echo
+              sleep 5
+              echo "== mihomo second read (5s later) =="
+              cat /proc/$pid/stat
+              readlink /proc/$pid/exe
+              echo "== field 22 (starttime) both reads above; vsize/rss = fields 23/24 =="
+              kill $pid 2>/dev/null || true
+              sleep 1
+              cat /tmp/mihomo.log || true
+              echo "== routing fixture test under QEMU non-root =="
+              go test ./internal/routing -run "TestControllerStatusEnvelope" -count=1 -v
+              echo "== lifecycle test under emulation =="
+              MIHOMOCTL_GO_TEST_EMULATED=1 MIHOMOCTL_GO_TEST_CORE=/tmp/mihomo go test ./internal/runtimecore -run "TestNativeLifecycleAndAuthentication" -count=1 -v 2>&1 | tail -40
+            '
+  systemd-semantics:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['22.04', '24.04']
+    runs-on: ubuntu-${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: reset-failed semantics
+        run: |
+          set -x
+          systemctl --version | head -1
+          systemctl reset-failed mihomoctl-go.service; echo "rc_unknown=$?"
+          printf '%s\n' '[Unit]' 'Description=mihomoctl-go diag' '[Service]' 'Type=oneshot' 'ExecStart=/bin/true' | sudo tee /etc/systemd/system/mihomoctl-go.service >/dev/null
+          sudo systemctl daemon-reload
+          systemctl reset-failed mihomoctl-go.service; echo "rc_after_install_reload=$?"
+          systemctl show mihomoctl-go.service -p ActiveState -p MainPID
+          systemctl reset-failed mihomoctl-go.service; echo "rc_after_show=$?"
+          sudo systemctl start mihomoctl-go.service; echo "rc_start=$?"
+          systemctl reset-failed mihomoctl-go.service; echo "rc_after_start=$?"
+          sudo rm -f /etc/systemd/system/mihomoctl-go.service
+          sudo systemctl daemon-reload
