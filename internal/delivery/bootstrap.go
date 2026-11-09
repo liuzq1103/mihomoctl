@@ -404,10 +404,23 @@ func abandonBootstrap(a platform.App, j bootstrapJournal) error {
 		if e = verifyBootstrapFile(j.Stage, j.RootFile); e != nil {
 			return e
 		}
-		if e = removeBootstrapTree(j.Stage, j); e != nil {
+		// The stage is renamed out of the way before it is removed, for the
+		// same reason the root is: an interrupted removal must never leave a
+		// partly deleted tree at the stage path, because the next recovery
+		// verifies the full inventory against that path before it decides
+		// anything and would refuse it forever. The tombstone carries the
+		// identity the journal recorded, so an interrupted removal resumes on
+		// it instead of wedging the scope.
+		if e = os.Rename(j.Stage, tombstone); e != nil {
 			return e
 		}
-		if e = syncDir(filepath.Dir(j.Stage)); e != nil {
+		if e = syncDir(a.Scope.DataRoot); e != nil {
+			return e
+		}
+		if e = removeBootstrapTree(tombstone, j); e != nil {
+			return e
+		}
+		if e = syncDir(a.Scope.DataRoot); e != nil {
 			return e
 		}
 	}

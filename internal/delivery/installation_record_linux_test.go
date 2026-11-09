@@ -157,6 +157,84 @@ func TestDryRunDoesNotRepairAnOrphanedLauncher(t *testing.T) {
 	}
 }
 
+// A record from before the receipt bound the launcher object keeps the
+// guarantee it was written with: content identity. A launcher that still
+// hashes to the recorded digest is ours — even when it is a new object with
+// the same bytes — and a repair may remove it.
+func TestLegacyOrphanedRecordRemovesAContentMatchingLauncher(t *testing.T) {
+	a, _ := installed(t)
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	legacy := rec
+	legacy.LauncherDevice, legacy.LauncherInode = 0, 0
+	if e = writeInstallationRecord(a, legacy); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.RemoveAll(installRoot(a)); e != nil {
+		t.Fatal(e)
+	}
+	// A new object with the launcher's exact bytes is the recorded launcher
+	// to a record that never bound an object.
+	if e = platform.AtomicWrite(rec.BinPath, launcher(installRoot(a)), 0700); e != nil {
+		t.Fatal(e)
+	}
+	if _, orphaned, e := installationOrphan(a); e != nil || !orphaned {
+		t.Fatalf("the legacy record did not claim its launcher: %v", e)
+	}
+	removed, e := repairOrphanedInstallation(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if removed != rec.BinPath {
+		t.Fatalf("removed = %q", removed)
+	}
+	if _, e = os.Lstat(rec.BinPath); !os.IsNotExist(e) {
+		t.Fatal("the launcher was not removed", e)
+	}
+}
+
+// A record from before object binding is not unconditional deletion
+// authority either: a launcher whose content no longer hashes to the recorded
+// digest is foreign, is never removed, and is not reported as an orphan of
+// this installation.
+func TestLegacyOrphanedRecordNeverRemovesAForeignLauncher(t *testing.T) {
+	a, _ := installed(t)
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	legacy := rec
+	legacy.LauncherDevice, legacy.LauncherInode = 0, 0
+	if e = writeInstallationRecord(a, legacy); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.RemoveAll(installRoot(a)); e != nil {
+		t.Fatal(e)
+	}
+	// A foreign command that carries different bytes.
+	if e = platform.AtomicWrite(rec.BinPath, []byte("#!/bin/sh\n# a foreign command\n"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	if _, orphaned, e := installationOrphan(a); e != nil || orphaned {
+		t.Fatalf("a foreign command was claimed as ours: %v", e)
+	}
+	removed, e := repairOrphanedInstallation(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if removed != "" {
+		t.Fatalf("a foreign command was removed: %q", removed)
+	}
+	if _, e = os.Lstat(rec.BinPath); e != nil {
+		t.Fatal("the foreign command was removed", e)
+	}
+	if _, e = os.Lstat(installationRecordPath(a)); !os.IsNotExist(e) {
+		t.Fatal("the record was not dropped", e)
+	}
+}
+
 // The uninstall of an installation whose program root was lost removes the
 // launcher that is left behind, by identity.
 func TestUninstallRemovesAnOrphanedLauncher(t *testing.T) {

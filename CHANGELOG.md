@@ -25,9 +25,12 @@
   `installation status` reports `orphaned` instead of `not-installed`, and a
   later install or uninstall removes the leftover launcher by identity —
   never a foreign replacement carrying identical bytes — instead of refusing
-  every later installation with `installation-command-exists`. An
-  installation that predates the copy gets one the next time the installer
-  sees it.
+  every later installation with `installation-command-exists`. A record from
+  before the receipt bound the launcher object is not unconditional deletion
+  authority either: it keeps the content guarantee it was written with, so a
+  launcher that still hashes to the recorded digest is ours and any other
+  object at the path is foreign and never removed. An installation that
+  predates the copy gets one the next time the installer sees it.
 
 - A percent sign in a managed core path is rendered correctly in the unit.
   The path-list settings (`TemporaryFileSystem=`, `BindPaths=`,
@@ -59,7 +62,10 @@
   or clear. The rollback renames the published root out of the way before it
   removes it, so an interrupted rollback leaves a private directory the next
   recovery finishes, never a partly removed tree at the published path that
-  would fail the inventory check for good.
+  would fail the inventory check for good. The staged tree is renamed out of
+  the way before it is removed too, so an interruption during the rollback of
+  a never-published installation resumes the same way instead of leaving a
+  partly deleted staged tree that no recovery could finish.
 
 - Full program uninstall now quarantines the receipt-bound installation atomically,
   journals exact file ownership outside the program root, and resumes interrupted

@@ -372,6 +372,47 @@ func TestBootstrapResumesAnInterruptedAbandonment(t *testing.T) {
 	}
 }
 
+// An abandonment that was interrupted while removing the staged tree has to
+// resume: the stage is renamed out of the way before anything is deleted, so
+// the interruption leaves a partly removed tree in the private tombstone,
+// never a partly deleted staged tree at the stage path where the next
+// recovery would verify the full inventory against it and refuse forever.
+func TestBootstrapResumesAnInterruptedStageAbandonment(t *testing.T) {
+	a, source, bin := crashBootstrap(t, "journal-published")
+	j, e := loadBootstrap(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.RemoveAll(j.LauncherDir); e != nil {
+		t.Fatal(e)
+	}
+	// The interruption: the stage was renamed out of the way and the removal
+	// of the tombstone had already deleted part of the tree.
+	tombstone := bootstrapTombstone(a, j)
+	if e = os.Rename(j.Stage, tombstone); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Remove(filepath.Join(tombstone, "current")); e != nil {
+		t.Fatal(e)
+	}
+	if e = recoverBootstrap(a); e != nil {
+		t.Fatalf("the recovery did not finish the interrupted abandonment: %v", e)
+	}
+	if exists, e := optionalExists(tombstone); e != nil || exists {
+		t.Fatal("the tombstone was retained", e)
+	}
+	if exists, e := optionalExists(j.Stage); e != nil || exists {
+		t.Fatal("a staged tree was left at the stage path", e)
+	}
+	if exists, e := optionalExists(bootstrapJournalPath(a)); e != nil || exists {
+		t.Fatal("journal retained", e)
+	}
+	publicInstallation(t, a, "install", source, bin)
+	if _, e := readReceipt(a); e != nil {
+		t.Fatal(e)
+	}
+}
+
 // An interrupted abandonment is resumed by removing exactly the objects the
 // journal inventoried. An object the journal never recorded is foreign: it
 // survives the removal, and the private abandoned directory keeps it instead

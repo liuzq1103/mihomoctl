@@ -122,8 +122,13 @@ and the next install or uninstall removes the leftover launcher by the object
 the copy names. The launcher script is fully reproducible, so the copy names
 the launcher by device and inode exactly as the receipt does, and a
 replacement file carrying identical bytes is a foreign object that is never
-removed. An installation published before the copy existed receives one the
-next time the installer sees it. Removing the copy by hand is safe only
+removed. A copy taken from a receipt that predates object binding — its
+launcher device and inode are both zero — is not unconditional deletion
+authority either: it decides by the content guarantee that receipt was written
+with, so a launcher that still hashes to the recorded digest is ours and any
+other object at the path is foreign and is left alone. An installation
+published before the copy existed receives one the next time the installer
+sees it. Removing the copy by hand is safe only
 together with the launcher it names, because the record is what tells that
 launcher from a fresh absence.
 

@@ -405,18 +405,33 @@ func TestCompoundRecoveryPreservesForeignReplacementBeforePublication(t *testing
 	assertHealthy(t, a)
 }
 
+// A foreign change is refused and the journal survives it. Putting the file
+// back the way the operation published it does not help: those bytes came
+// from this operation, but the object carrying them now is not the one the
+// journal names, and the recovery never touches a foreign object. Restoring
+// the recorded original content does complete the recovery — there is
+// nothing left to undo on that path. Neither outcome depends on which inode
+// a repair happens to reuse: the same-byte refusal is pinned by
+// TestCompoundRecoveryRefusesSameByteForeignReplacement, and the untouched
+// foreign object is pinned by
+// TestCompoundRecoveryPreservesForeignReplacementBeforePublication.
 func TestRecoveryRefusesForeignChangesAndPreservesJournal(t *testing.T) {
 	a := initializedApp(t)
 	if _, e := Run(context.Background(), a, platform.Request{Command: []string{"start"}}); e != nil {
 		t.Fatal(e)
 	}
-	candidate := replacementCore(t, a)
-	crashAt(t, crashSpec{App: a, Request: platform.Request{Command: []string{"core", "adopt"}, Options: map[string][]string{"path": {candidate}}}, Phase: "files-published"})
-	raw, e := platform.ReadPrivate(a.Scope.ManagerPath())
+	// The recorded original content of the managed configuration.
+	before, e := platform.ReadPrivate(a.Scope.ManagerPath())
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = platform.AtomicWrite(a.Scope.ManagerPath(), append(raw, []byte("# external change\n")...), 0600); e != nil {
+	candidate := replacementCore(t, a)
+	crashAt(t, crashSpec{App: a, Request: platform.Request{Command: []string{"core", "adopt"}, Options: map[string][]string{"path": {candidate}}}, Phase: "files-published"})
+	published, e := platform.ReadPrivate(a.Scope.ManagerPath())
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = platform.AtomicWrite(a.Scope.ManagerPath(), append(published, []byte("# external change\n")...), 0600); e != nil {
 		t.Fatal(e)
 	}
 	_, e = Run(context.Background(), a, platform.Request{Command: []string{"start"}})
@@ -424,7 +439,13 @@ func TestRecoveryRefusesForeignChangesAndPreservesJournal(t *testing.T) {
 	if _, e = os.Stat(compoundPath(a)); e != nil {
 		t.Fatal(e)
 	}
-	if e = platform.AtomicWrite(a.Scope.ManagerPath(), raw, 0600); e != nil {
+	// Repairing the file to its recorded original content leaves nothing to
+	// undo: the recovery completes and the operator's object survives it.
+	// (Repairing to the bytes the operation published would leave a foreign
+	// object carrying a version of the content, which is refused as well;
+	// TestCompoundRecoveryRefusesSameByteForeignReplacement pins that refusal
+	// without the inode a repair could recycle.)
+	if e = platform.AtomicWrite(a.Scope.ManagerPath(), before, 0600); e != nil {
 		t.Fatal(e)
 	}
 	recoverViaMutation(t, a)

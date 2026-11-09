@@ -69,11 +69,32 @@ func removeInstallationRecord(a platform.App) error {
 	return syncDir(a.Scope.StateRoot)
 }
 
+// orphanedLauncherOurs reports whether the object standing at the recorded
+// launcher path is still this installation's launcher. A record that binds
+// the launcher object owns it by identity: a replacement carrying identical
+// bytes is a different object and never counts as ours. A record written
+// before that binding keeps the guarantee it was written with, content
+// identity, so a launcher that still hashes to the recorded digest is ours
+// and any other object at the path is foreign.
+func orphanedLauncherOurs(rec Receipt) (bool, error) {
+	device, inode, e := removalObjectIdentity(rec.BinPath)
+	if e != nil {
+		return false, e
+	}
+	if rec.LauncherDevice != 0 || rec.LauncherInode != 0 {
+		return device == rec.LauncherDevice && inode == rec.LauncherInode, nil
+	}
+	raw, e := os.ReadFile(rec.BinPath)
+	if e != nil {
+		return false, e
+	}
+	return platform.Hash(raw) == rec.LauncherSHA256, nil
+}
+
 // installationOrphan reports the launcher of an installation whose program
 // root was lost. The launcher is ours only while the object at the path is
-// still the object the record names: the launcher bytes are reproducible, so
-// a replacement that carries identical bytes is a foreign object and never
-// counts as ours. A record whose launcher is gone describes an installation
+// still the object the record names under the guarantee the record was
+// written with. A record whose launcher is gone describes an installation
 // that left nothing behind.
 func installationOrphan(a platform.App) (Receipt, bool, error) {
 	rec, exists, e := loadInstallationRecord(a)
@@ -87,24 +108,24 @@ func installationOrphan(a platform.App) (Receipt, bool, error) {
 	if !present {
 		return Receipt{}, false, nil
 	}
-	device, inode, e := removalObjectIdentity(rec.BinPath)
+	ours, e := orphanedLauncherOurs(rec)
 	if e != nil {
 		return Receipt{}, false, e
 	}
-	if rec.LauncherDevice != 0 || rec.LauncherInode != 0 {
-		if device != rec.LauncherDevice || inode != rec.LauncherInode {
-			return Receipt{}, false, nil
-		}
+	if !ours {
+		return Receipt{}, false, nil
 	}
 	return rec, true, nil
 }
 
 // repairOrphanedInstallation removes the launcher of an installation whose
 // program root was lost and drops the record that named it. The launcher can
-// only fail now: the root it points at is gone. It is removed by identity, so
-// a foreign object that took its place is never deleted as if it were ours.
-// The path of a removed launcher is returned; an empty path means that
-// nothing of ours was left behind.
+// only fail now: the root it points at is gone. It is removed under the
+// guarantee the record was written with — by object identity, or by content
+// identity for a record from before object binding — so a foreign object
+// that took its place is never deleted as if it were ours. The path of a
+// removed launcher is returned; an empty path means that nothing of ours was
+// left behind.
 func repairOrphanedInstallation(a platform.App) (string, error) {
 	rec, exists, e := loadInstallationRecord(a)
 	if e != nil || !exists {
@@ -116,12 +137,11 @@ func repairOrphanedInstallation(a platform.App) (string, error) {
 		return "", e
 	}
 	if present {
-		device, inode, e := removalObjectIdentity(rec.BinPath)
+		ours, e := orphanedLauncherOurs(rec)
 		if e != nil {
 			return "", e
 		}
-		if rec.LauncherDevice == 0 && rec.LauncherInode == 0 ||
-			device == rec.LauncherDevice && inode == rec.LauncherInode {
+		if ours {
 			if e = os.Remove(rec.BinPath); e != nil {
 				return "", e
 			}
