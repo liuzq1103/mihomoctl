@@ -271,9 +271,26 @@ type privilegedFixture struct {
 
 func privilegedStep(t *testing.T, name string, fn func(*testing.T)) {
 	t.Helper()
-	if !t.Run(name, fn) {
-		t.Fatalf("required privileged stage failed: %s", name)
+	if t.Run(name, fn) {
+		return
 	}
+	// A required stage failed: leave the unit's own view of the failure in
+	// the test log. Without this the suite reports only its own error codes
+	// and the systemd journal with the actual service output is lost with
+	// the disposable runner.
+	for _, cmd := range [][]string{
+		{"systemctl", "status", unitName, "--no-pager", "-l", "--lines=0"},
+		{"journalctl", "-u", unitName, "--no-pager", "-n", "120", "-o", "short-precise"},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		out, e := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
+		cancel()
+		t.Logf("%s failed-stage diagnostics:\n%s", strings.Join(cmd, " "), out)
+		if e != nil {
+			t.Logf("%s diagnostics unavailable: %v", strings.Join(cmd, " "), e)
+		}
+	}
+	t.Fatalf("required privileged stage failed: %s", name)
 }
 
 func mustManager(t *testing.T, a platform.App) manager {
