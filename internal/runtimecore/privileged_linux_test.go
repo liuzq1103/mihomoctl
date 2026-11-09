@@ -105,7 +105,16 @@ func TestPrivilegedSystemdTunAndSSH(t *testing.T) {
 	}
 	privilegedStep(t, "interrupted-tun-enable-restores-running-service", func(t *testing.T) {
 		crashAt(t, crashSpec{App: a, Request: platform.Request{Command: []string{"tun", "enable"}}, Phase: "files-published"})
-		f.rootRun(t, []string{"start"}, nil, "PASS")
+		// This start replays the interrupted compound operation, so on failure
+		// keep the recovery's own health view in the log before the fixture
+		// cleans up.
+		startCtx, startCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer startCancel()
+		startDoc, startErr := Run(startCtx, a, platform.Request{Command: []string{"start"}})
+		if startErr != nil || startDoc.Overall != "PASS" {
+			h, he := Run(startCtx, a, platform.Request{Command: []string{"health", "check"}})
+			t.Fatalf("recovery start failed: err=%v doc=%+v; post-failure health: err=%v doc=%+v", startErr, startDoc, he, h)
+		}
 		if mustManager(t, a).Tun.Enabled {
 			t.Fatal("interrupted enable was not rolled back")
 		}
@@ -280,11 +289,25 @@ func privilegedStep(t *testing.T, name string, fn func(*testing.T)) {
 	// the disposable runner.
 	for _, cmd := range [][]string{
 		{"systemctl", "status", unitName, "--no-pager", "-l", "--lines=0"},
-		{"journalctl", "-u", unitName, "--no-pager", "-n", "120", "-o", "short-precise"},
+		{"systemctl", "show", unitName, "--no-pager"},
+		{"systemctl", "list-jobs", "--no-pager"},
+		{"journalctl", "-u", unitName, "--no-pager", "-n", "400", "-o", "short-precise"},
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		out, e := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		cancel()
+		// The core logs a per-connection DIRECT-dial warning line several
+		// times a second; those lines can push the decisive transition out
+		// of a bounded journal window, so drop them from the dump.
+		if cmd[0] == "journalctl" {
+			var kept []string
+			for _, line := range strings.Split(string(out), "\n") {
+				if !strings.Contains(line, "dial DIRECT") {
+					kept = append(kept, line)
+				}
+			}
+			out = []byte(strings.Join(kept, "\n"))
+		}
 		t.Logf("%s failed-stage diagnostics:\n%s", strings.Join(cmd, " "), out)
 		if e != nil {
 			t.Logf("%s diagnostics unavailable: %v", strings.Join(cmd, " "), e)
@@ -617,8 +640,11 @@ func (f *privilegedFixture) rootRun(t *testing.T, command []string, options map[
 	// The real unit deliberately limits starts to five per minute. CI exercises
 	// more explicit transitions than that; reset only this receipt-owned unit's
 	// counter so the suite tests activation/recovery rather than rate limiting.
-	// Before the unit's first start there is no counter to reset, and systemd
-	// refuses reset-failed for a unit it has never loaded.
+	// Before the unit's first start there is no counter to reset. The reset
+	// also only works while systemd still tracks the unit: once it deactivates
+	// cleanly the manager unloads it and systemctl answers "Unit ... not
+	// loaded" (verified on systemd 245 through 255) — and in that state no
+	// start counter exists either, so nothing needs resetting.
 	name := strings.Join(command, "-")
 	if f.UnitStarted && member(name, "start", "restart", "service-start", "service-restart", "tun-enable", "tun-disable") {
 		if _, exists := os.Lstat(unitPath(f.App)); exists == nil {
@@ -629,8 +655,10 @@ func (f *privilegedFixture) rootRun(t *testing.T, command []string, options map[
 			if e = requireOwnedUnit(f.App, m); e != nil {
 				t.Fatal(e)
 			}
-			if _, e = systemctl(ctx, f.App, "reset-failed", unitName); e != nil {
-				t.Fatal("cannot reset owned test unit start counter", e)
+			if p, e := serviceProperties(ctx, f.App); e == nil && member(p["ActiveState"], "active", "activating", "failed") {
+				if _, e = systemctl(ctx, f.App, "reset-failed", unitName); e != nil {
+					t.Fatal("cannot reset owned test unit start counter", e)
+				}
 			}
 		}
 	}
