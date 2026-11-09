@@ -112,7 +112,9 @@ func Run(ctx context.Context, a platform.App, r platform.Request) (platform.Enve
 		}
 	}
 	if e != nil {
-		return platform.Failure(r.Name(), a.Scope.Name, e), e
+		// A refusal is reported under the requested command word, as the
+		// reference implementation does; a successful result keeps the leaf name.
+		return platform.Failure(r.TopLevel(), a.Scope.Name, e), e
 	}
 	doc.Data = data
 	return doc, nil

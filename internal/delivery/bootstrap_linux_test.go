@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/liuzq1103/mihomoctl/internal/platform"
@@ -234,6 +235,75 @@ func TestBootstrapPublicationNeverReplacesExistingDestination(t *testing.T) {
 	after, e := bootstrapIdentity(root)
 	if e != nil || before != after {
 		t.Fatal("foreign root changed", e)
+	}
+}
+
+// A publication whose objects are gone cannot be rolled forward. Recovery must
+// undo the remnants it owns instead of refusing every later command.
+func TestBootstrapAbandonsPublicationWhoseObjectsAreGone(t *testing.T) {
+	t.Run("staged-tree-removed", func(t *testing.T) {
+		a, source, bin := crashBootstrap(t, "journal-published")
+		j, e := loadBootstrap(a)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.RemoveAll(j.Stage); e != nil {
+			t.Fatal(e)
+		}
+		if e = recoverBootstrap(a); e != nil {
+			t.Fatal(e)
+		}
+		if exists, e := optionalExists(bootstrapJournalPath(a)); e != nil || exists {
+			t.Fatal("journal retained", e)
+		}
+		if exists, e := optionalExists(j.LauncherDir); e != nil || exists {
+			t.Fatal("staged launcher retained", e)
+		}
+		publicInstallation(t, a, "install", source, bin)
+		if _, e := readReceipt(a); e != nil {
+			t.Fatal(e)
+		}
+	})
+	t.Run("published-root-removed", func(t *testing.T) {
+		a, source, bin := crashBootstrap(t, "launcher-published")
+		j, e := loadBootstrap(a)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.RemoveAll(j.Root); e != nil {
+			t.Fatal(e)
+		}
+		if e = recoverBootstrap(a); e != nil {
+			t.Fatal(e)
+		}
+		// The launcher is ours and points at a root that no longer exists.
+		if exists, e := optionalExists(j.Receipt.BinPath); e != nil || exists {
+			t.Fatal("own launcher retained", e)
+		}
+		if exists, e := optionalExists(bootstrapJournalPath(a)); e != nil || exists {
+			t.Fatal("journal retained", e)
+		}
+		publicInstallation(t, a, "install", source, bin)
+		if _, e := readReceipt(a); e != nil {
+			t.Fatal(e)
+		}
+	})
+}
+
+// A publication that can never succeed on this kernel or filesystem must be
+// rolled back; a foreign destination is a conflict, not an unsupported system.
+func TestPublishRollbackDetectsUnsupportedSystem(t *testing.T) {
+	for _, e := range []error{syscall.ENOSYS, syscall.EINVAL, syscall.EOPNOTSUPP} {
+		code, ok := publishRollback(e)
+		if !ok || code != "bootstrap-publish-unsupported" {
+			t.Fatal(e, code, ok)
+		}
+	}
+	if _, ok := publishRollback(syscall.EEXIST); ok {
+		t.Fatal("a foreign destination was treated as an unsupported system")
+	}
+	if _, ok := publishRollback(errors.New("unrelated")); ok {
+		t.Fatal("an unrelated failure was treated as an unsupported system")
 	}
 }
 

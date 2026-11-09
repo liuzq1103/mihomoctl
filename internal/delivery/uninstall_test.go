@@ -201,6 +201,59 @@ func TestRemovalRefusesForeignFilesAndChangedBytes(t *testing.T) {
 	}
 }
 
+// A replacement file that carries identical bytes is still a different object.
+// Recovery must refuse it instead of deleting it as a program-owned file.
+func TestRemovalRefusesSameByteForeignReplacement(t *testing.T) {
+	replace := func(t *testing.T, path string, mode os.FileMode) {
+		t.Helper()
+		b, e := os.ReadFile(path)
+		if e != nil {
+			t.Fatal(e)
+		}
+		// Write elsewhere and rename over the path: the bytes are identical but
+		// the inode is new, which is exactly the replacement case.
+		staged := filepath.Join(privateTemp(t), "replacement")
+		if e = os.WriteFile(staged, b, mode); e != nil {
+			t.Fatal(e)
+		}
+		if e = os.Rename(staged, path); e != nil {
+			t.Fatal(e)
+		}
+	}
+	t.Run("program-file", func(t *testing.T) {
+		a, id := installed(t)
+		j := interruptUninstall(t, a, "journal-published")
+		p := filepath.Join(installRoot(a), "generations", id, "bin", "mihomoctl")
+		replace(t, p, 0700)
+		if e := recoverUninstall(a); e == nil {
+			t.Fatal("same-byte replacement accepted")
+		}
+		if _, e := os.Lstat(p); e != nil {
+			t.Fatal("foreign replacement deleted", e)
+		}
+		if _, e := os.Lstat(j.Receipt.BinPath); e != nil {
+			t.Fatal("launcher removed after refusal", e)
+		}
+		if _, e := os.Lstat(uninstallJournal(a)); e != nil {
+			t.Fatal("journal discarded", e)
+		}
+	})
+	t.Run("launcher", func(t *testing.T) {
+		a, _ := installed(t)
+		j := interruptUninstall(t, a, "journal-published")
+		replace(t, j.Receipt.BinPath, 0700)
+		if e := recoverUninstall(a); e == nil {
+			t.Fatal("same-byte launcher replacement accepted")
+		}
+		if _, e := os.Lstat(j.Receipt.BinPath); e != nil {
+			t.Fatal("foreign launcher deleted", e)
+		}
+		if _, e := os.Lstat(installRoot(a)); e != nil {
+			t.Fatal("program root removed after refusal", e)
+		}
+	})
+}
+
 func TestRemovalRefusesConfiguredCoreWithinProgram(t *testing.T) {
 	for _, adopted := range []bool{false, true} {
 		t.Run(map[bool]string{false: "configured", true: "adopted"}[adopted], func(t *testing.T) {

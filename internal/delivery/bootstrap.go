@@ -180,7 +180,15 @@ func recoverBootstrapWithHooks(a platform.App, h bootstrapHooks) error {
 	if e != nil {
 		return e
 	}
-	if root == stage {
+	if !stage && !root {
+		// The recorded publication is gone: no staged tree remains and the
+		// install root was removed. Nothing can be rolled forward, so undo the
+		// remnants this journal owns instead of refusing every later command.
+		return abandonBootstrap(a, j)
+	}
+	if stage && root {
+		// The staged tree was never renamed away and an install root exists:
+		// the recorded publication cannot be identified.
 		return fail("bootstrap-root-identity-conflict")
 	}
 	tree := j.Stage
@@ -229,6 +237,15 @@ func recoverBootstrapWithHooks(a platform.App, h bootstrapHooks) error {
 	}
 	if !root {
 		if e = publishBootstrapRoot(j.Stage, j.Root); e != nil {
+			if code, ok := publishRollback(e); ok {
+				// This kernel or filesystem cannot publish the root atomically.
+				// Nothing was published, so the staged tree and the journal are
+				// rolled back rather than wedging every later command.
+				if re := abandonBootstrap(a, j); re != nil {
+					return re
+				}
+				return fail(code)
+			}
 			return e
 		}
 		if e = syncDir(a.Scope.DataRoot); e != nil {
@@ -301,6 +318,71 @@ func recoverBootstrapWithHooks(a platform.App, h bootstrapHooks) error {
 		return e
 	}
 	return bootstrapCheckpoint(h, "journal-removed")
+}
+
+// abandonBootstrap rolls back a publication that can no longer complete. It
+// removes only objects the journal proves are ours, never a foreign file, and
+// it discards our own journal so the scope stays usable instead of refusing
+// every later command.
+func abandonBootstrap(a platform.App, j bootstrapJournal) error {
+	var e error
+	if exists, e := optionalExists(j.Stage); e != nil {
+		return e
+	} else if exists {
+		if e = verifyBootstrapFile(j.Stage, j.RootFile); e != nil {
+			return e
+		}
+		if e = os.RemoveAll(j.Stage); e != nil {
+			return e
+		}
+		if e = syncDir(filepath.Dir(j.Stage)); e != nil {
+			return e
+		}
+	}
+	if exists, e := optionalExists(j.LauncherDir); e != nil {
+		return e
+	} else if exists {
+		if e = verifyBootstrapFile(j.LauncherDir, j.LauncherDirFile); e != nil {
+			return e
+		}
+		children, e := os.ReadDir(j.LauncherDir)
+		if e != nil {
+			return e
+		}
+		for _, child := range children {
+			if child.Name() != "launcher" {
+				return fail("bootstrap-launcher-stage-drift")
+			}
+			if e = verifyBootstrapFile(filepath.Join(j.LauncherDir, "launcher"), j.Launcher); e != nil {
+				return e
+			}
+		}
+		if e = os.RemoveAll(j.LauncherDir); e != nil {
+			return e
+		}
+		if e = syncDir(filepath.Dir(j.LauncherDir)); e != nil {
+			return e
+		}
+	}
+	if exists, e := optionalExists(j.Receipt.BinPath); e != nil {
+		return e
+	} else if exists {
+		// A published launcher points at an install root that no longer exists.
+		// It stays ours only while its identity still matches the journal.
+		if e = verifyBootstrapFile(j.Receipt.BinPath, j.Launcher); e != nil {
+			return e
+		}
+		if e = os.Remove(j.Receipt.BinPath); e != nil {
+			return e
+		}
+		if e = syncDir(filepath.Dir(j.Receipt.BinPath)); e != nil {
+			return e
+		}
+	}
+	if e = os.Remove(bootstrapJournalPath(a)); e != nil {
+		return e
+	}
+	return syncDir(a.Scope.StateRoot)
 }
 
 func bootstrap(ctx context.Context, a platform.App, source, binDir string, dry bool, h bootstrapHooks) (map[string]any, error) {

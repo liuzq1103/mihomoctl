@@ -7,3 +7,6 @@ func bootstrapIdentity(p string) (bootstrapFile, error) {
 }
 
 func publishBootstrapRoot(from, to string) error { return usage("linux-required") }
+
+// publishRollback never fires where the exclusive rename is unavailable.
+func publishRollback(e error) (string, bool) { return "", false }

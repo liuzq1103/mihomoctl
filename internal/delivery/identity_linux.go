@@ -28,6 +28,25 @@ func removalIdentity(p string) (uint64, uint64, error) {
 	return uint64(s.Dev), s.Ino, nil
 }
 
+// removalObjectIdentity binds a journalled path to the exact object that was
+// recorded. A content hash cannot tell our own file from a foreign
+// replacement carrying identical bytes, so the device/inode pair is captured
+// as well and re-checked before anything is deleted.
+func removalObjectIdentity(p string) (uint64, uint64, error) {
+	if e := platform.CheckPath(p); e != nil {
+		return 0, 0, e
+	}
+	st, e := os.Lstat(p)
+	if e != nil {
+		return 0, 0, e
+	}
+	s, ok := st.Sys().(*syscall.Stat_t)
+	if !ok || (!st.IsDir() && !st.Mode().IsRegular()) {
+		return 0, 0, fail("uninstall-entry-unowned")
+	}
+	return uint64(s.Dev), s.Ino, nil
+}
+
 func trustedVersionBinary(p string, system bool) error {
 	if !filepath.IsAbs(p) || filepath.Clean(p) != p {
 		return fail("core-path-untrusted")

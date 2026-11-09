@@ -3,6 +3,7 @@
 package delivery
 
 import (
+	"errors"
 	"os"
 	"runtime"
 	"syscall"
@@ -32,6 +33,17 @@ func bootstrapIdentity(p string) (bootstrapFile, error) {
 		out.SHA256, _, e = fileDigest(p)
 	}
 	return out, e
+}
+
+// publishRollback reports a publication failure that can never succeed on this
+// kernel or filesystem. Such a failure must be rolled back instead of leaving
+// a journal behind that refuses every later command.
+func publishRollback(e error) (string, bool) {
+	switch {
+	case errors.Is(e, syscall.ENOSYS), errors.Is(e, syscall.EINVAL), errors.Is(e, syscall.EOPNOTSUPP):
+		return "bootstrap-publish-unsupported", true
+	}
+	return "", false
 }
 
 // renameat2(RENAME_NOREPLACE) also refuses an existing empty foreign directory.

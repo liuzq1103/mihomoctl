@@ -88,7 +88,11 @@ Uninstall removes the owned launcher, receipt, current pointer and all program
 generations. Configuration, runtime state and independent `cores/` storage remain.
 A private journal outside the program root binds the exact receipt SHA-256,
 current manifest identity, root inode/device, unique quarantine and complete file
-inventory. The verified program root is renamed atomically into that quarantine.
+inventory. Each journalled object is additionally bound by its own device/inode
+pair, and the launcher is bound by identity as well as by its hash: the launcher
+script is fully reproducible, so a replacement file carrying identical bytes is a
+foreign file and is refused instead of deleted. The verified program root is
+renamed atomically into that quarantine.
 Only captured unchanged files are removed; symlinks, special files, foreign changes
 and replacement installations fail closed. Recovery resumes partial deletion,
 and Bootstrap recovers or refuses an outstanding journal before installing new code.
@@ -110,6 +114,15 @@ two directories, then install again. A staged directory left behind by an
 interrupted publication is private and is never adopted and never guessed away,
 so it is safe to delete once no installation is pending. Removing the journal
 discards an unfinished publication; it does not delete an installed program.
+
+A publication whose objects are gone is rolled back instead of refused. When the
+staged tree and the install root are both absent, recovery removes the launcher
+that this journal still owns, discards the journal and leaves the scope usable
+again, so an interrupted publication never wedges every later command. When the
+kernel or the filesystem cannot publish the install root atomically at all, the
+staged tree and the journal are rolled back and the installation reports
+`bootstrap-publish-unsupported`; no public path is changed and the attempt can
+be repeated on a supported filesystem.
 
 CI runs race/vet/full-package tests and product CLI/bundle smoke on Ubuntu 22.04
 and 24.04, amd64 natively and arm64 via explicit QEMU Ubuntu containers. Race tests

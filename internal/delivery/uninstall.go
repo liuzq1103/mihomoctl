@@ -14,6 +14,10 @@ import (
 type removalEntry struct {
 	Directory bool   `json:"directory"`
 	SHA256    string `json:"sha256,omitempty"`
+	// The device/inode pair identifies the recorded object itself. Identical
+	// bytes from a replacement file are a different object.
+	Device uint64 `json:"device"`
+	Inode  uint64 `json:"inode"`
 }
 
 // The journal lives outside the program root, so it survives deletion of the
@@ -32,6 +36,11 @@ type removalJournal struct {
 	Current     string                  `json:"current_generation"`
 	Device      uint64                  `json:"device"`
 	Inode       uint64                  `json:"inode"`
+	// The launcher lives outside the program root, so its identity is recorded
+	// separately. Its bytes are reproducible, and only the object itself proves
+	// that it is still the launcher this installation owns.
+	LauncherDevice uint64 `json:"launcher_device"`
+	LauncherInode  uint64 `json:"launcher_inode"`
 }
 
 type uninstallHooks struct {
@@ -81,7 +90,7 @@ func within(root, p string) bool {
 // Undeclared files or unexpected top-level entries are not treated as program-owned.
 func collectRemoval(a platform.App) (removalJournal, error) {
 	root := installRoot(a)
-	j := removalJournal{Format: 3, Project: Project, Root: root, Entries: map[string]removalEntry{}}
+	j := removalJournal{Format: 4, Project: Project, Root: root, Entries: map[string]removalEntry{}}
 	rec, e := readReceipt(a)
 	if e != nil {
 		return j, e
@@ -105,6 +114,13 @@ func collectRemoval(a platform.App) (removalJournal, error) {
 	j.Quarantine = filepath.Join(a.Scope.DataRoot, ".install-remove-"+j.Token)
 	j.Phase = "prepared"
 	j.Device, j.Inode, e = removalIdentity(root)
+	if e != nil {
+		return j, e
+	}
+	// Record the launcher object itself, not just its bytes. The launcher script
+	// is fully reproducible, so a same-byte replacement must never be deleted
+	// as if it were ours.
+	j.LauncherDevice, j.LauncherInode, e = removalObjectIdentity(rec.BinPath)
 	if e != nil {
 		return j, e
 	}
@@ -156,6 +172,10 @@ func collectRemoval(a platform.App) (removalJournal, error) {
 			return e
 		}
 		entry := removalEntry{Directory: d.IsDir()}
+		entry.Device, entry.Inode, e = removalObjectIdentity(p)
+		if e != nil {
+			return e
+		}
 		if !d.IsDir() {
 			entry.SHA256, _, e = fileDigest(p)
 			if e != nil {
@@ -178,13 +198,14 @@ func loadRemoval(a platform.App) (removalJournal, error) {
 	if e = StrictJSON(b, &j); e != nil {
 		return j, e
 	}
-	if j.Format != 3 || j.Project != Project || j.Root != installRoot(a) || len(j.Entries) == 0 {
+	if j.Format != 4 || j.Project != Project || j.Root != installRoot(a) || len(j.Entries) == 0 {
 		return j, fail("uninstall-journal-invalid")
 	}
 	if !shaPattern.MatchString(j.Token) ||
 		j.Quarantine != filepath.Join(a.Scope.DataRoot, ".install-remove-"+j.Token) ||
 		(j.Phase != "prepared" && j.Phase != "quarantined") ||
-		!shaPattern.MatchString(j.ReceiptHash) || !generationPattern.MatchString(j.Current) || j.Inode == 0 {
+		!shaPattern.MatchString(j.ReceiptHash) || !generationPattern.MatchString(j.Current) || j.Inode == 0 ||
+		j.LauncherDevice == 0 || j.LauncherInode == 0 {
 		return j, fail("uninstall-journal-invalid")
 	}
 	if e = removalReceipt(a, j.Receipt); e != nil {
@@ -192,7 +213,8 @@ func loadRemoval(a platform.App) (removalJournal, error) {
 	}
 	for n, entry := range j.Entries {
 		if !safeName(n) || (entry.Directory && entry.SHA256 != "") ||
-			(!entry.Directory && !shaPattern.MatchString(entry.SHA256)) {
+			(!entry.Directory && !shaPattern.MatchString(entry.SHA256)) ||
+			entry.Device == 0 || entry.Inode == 0 {
 			return j, fail("uninstall-journal-invalid")
 		}
 		if n != "receipt.json" && n != "current" && n != "generations" && !strings.HasPrefix(n, "generations/") {
@@ -245,6 +267,15 @@ func verifyRemovalSnapshot(root string, j removalJournal, complete bool) error {
 		if !ok || entry.Directory != d.IsDir() {
 			return fail("uninstall-inventory-drift")
 		}
+		// The recorded object must still be the object on disk. Identical bytes
+		// in a replacement file are not authorization to delete it.
+		device, inode, e := removalObjectIdentity(p)
+		if e != nil {
+			return e
+		}
+		if device != entry.Device || inode != entry.Inode {
+			return fail("uninstall-inventory-drift")
+		}
 		if !d.IsDir() {
 			h, _, e := fileDigest(p)
 			if e != nil {
@@ -278,6 +309,31 @@ func verifyRemovalSnapshot(root string, j removalJournal, complete bool) error {
 		}
 	}
 	return nil
+}
+
+// The launcher script is fully reproducible, so its bytes prove nothing about
+// ownership. Only the recorded object does. A launcher that is present but no
+// longer the recorded object is a foreign file and is never deleted.
+func removalLauncherOwned(j removalJournal) (bool, error) {
+	exists, e := optionalExists(j.Receipt.BinPath)
+	if e != nil {
+		return false, e
+	}
+	if !exists {
+		return false, nil
+	}
+	device, inode, e := removalObjectIdentity(j.Receipt.BinPath)
+	if e != nil {
+		return false, e
+	}
+	if device != j.LauncherDevice || inode != j.LauncherInode {
+		return false, fail("uninstall-launcher-drift")
+	}
+	b, e := platform.ReadPrivate(j.Receipt.BinPath)
+	if e != nil || platform.Hash(b) != j.Receipt.LauncherSHA256 {
+		return false, fail("uninstall-launcher-drift")
+	}
+	return true, nil
 }
 
 func protectConfiguredCore(a platform.App, roots ...string) error {
@@ -350,13 +406,8 @@ func validateRemovalStatus(a platform.App, j removalJournal) error {
 			}
 		}
 	}
-	if exists, e := optionalExists(j.Receipt.BinPath); e != nil {
+	if _, e = removalLauncherOwned(j); e != nil {
 		return e
-	} else if exists {
-		b, e := platform.ReadPrivate(j.Receipt.BinPath)
-		if e != nil || platform.Hash(b) != j.Receipt.LauncherSHA256 {
-			return fail("uninstall-launcher-drift")
-		}
 	}
 	return nil
 }
@@ -430,15 +481,11 @@ func recoverUninstallWithHooks(a platform.App, hooks uninstallHooks) error {
 			return e
 		}
 	}
-	exists, e = optionalExists(j.Receipt.BinPath)
+	owned, e := removalLauncherOwned(j)
 	if e != nil {
 		return e
 	}
-	if exists {
-		b, e := platform.ReadPrivate(j.Receipt.BinPath)
-		if e != nil || platform.Hash(b) != j.Receipt.LauncherSHA256 {
-			return fail("uninstall-launcher-drift")
-		}
+	if owned {
 		if e = os.Remove(j.Receipt.BinPath); e != nil {
 			return e
 		}
@@ -480,6 +527,15 @@ func recoverUninstallWithHooks(a platform.App, hooks uninstallHooks) error {
 				if e != nil || h != j.Entries[n].SHA256 {
 					return fail("uninstall-inventory-drift")
 				}
+			}
+			// Re-check the recorded object immediately before unlinking it, so a
+			// replacement file with identical bytes is refused rather than deleted.
+			device, inode, e := removalObjectIdentity(p)
+			if e != nil {
+				return e
+			}
+			if device != j.Entries[n].Device || inode != j.Entries[n].Inode {
+				return fail("uninstall-inventory-drift")
 			}
 			if e = os.Remove(p); e != nil {
 				return e

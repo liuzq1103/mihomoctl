@@ -9,11 +9,17 @@
   `renameat2(RENAME_NOREPLACE)`; a foreign launcher is never adopted, replaced or
   deleted. Recovery verifies the staged tree byte for byte, including inode, device,
   mode and SHA-256. Installing again over an installation this project owns
-  reports `already_installed` instead of refusing.
+  reports `already_installed` instead of refusing. A publication whose objects are
+  gone is rolled back instead of refusing every later command, and a filesystem
+  that cannot publish the root atomically is reported as
+  `bootstrap-publish-unsupported` with the staged tree and journal discarded.
 
 - Full program uninstall now quarantines the receipt-bound installation atomically,
   journals exact file ownership outside the program root, and resumes interrupted
-  deletion without touching replacement installations. It is idempotent and permits
+  deletion without touching replacement installations. Every journalled object is
+  bound by device and inode as well as content hash, and the launcher is bound by
+  identity too, so a replacement file carrying identical bytes is refused instead
+  of being deleted as program-owned. It is idempotent and permits
   reinstall. Corrupt status fails; only true absence reports not-installed.
   Configuration and independent cores remain; uninstall refuses configured cores
   located inside program generations.
@@ -34,8 +40,9 @@
 - Configuration errors report a line and column, duplicate and invalid keys are
   distinguished, and every failure envelope carries a remediation hint. Unknown
   options and retired commands are refused with the same command grouping and
-  option lists as the reference implementation. A dry run never enters the
-  mutation lock and therefore never replays a recovery journal.
+  option lists as the reference implementation. A refusal is reported under the
+  requested command word, as the reference implementation reports it. A dry run
+  never enters the mutation lock and therefore never replays a recovery journal.
 
 - Release bundles record their source commit and whether the source tree was
   dirty in `BUILD.json` and `build-receipt.json`. Review evidence is checked in

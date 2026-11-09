@@ -129,7 +129,12 @@ func TestExecuteDryRunPreservesPendingUninstall(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		entry := map[string]any{"directory": d.IsDir()}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		stat := info.Sys().(*syscall.Stat_t)
+		entry := map[string]any{"directory": d.IsDir(), "device": uint64(stat.Dev), "inode": stat.Ino}
 		if !d.IsDir() {
 			b, err := os.ReadFile(path)
 			if err != nil {
@@ -143,6 +148,11 @@ func TestExecuteDryRunPreservesPendingUninstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	launcherInfo, err := os.Lstat(receipt.BinPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcherStat := launcherInfo.Sys().(*syscall.Stat_t)
 	info, err := os.Stat(root)
 	if err != nil {
 		t.Fatal(err)
@@ -154,13 +164,15 @@ func TestExecuteDryRunPreservesPendingUninstall(t *testing.T) {
 	}
 	journal := filepath.Join(scope.StateRoot, "delivery-uninstall.json")
 	quarantine := filepath.Join(scope.DataRoot, ".install-remove-"+token)
-	// Match delivery's format-3 prepared journal, including its inode identity
-	// and complete manifest/receipt inventory. No relaxed or invalid fixture.
+	// Match delivery's format-4 prepared journal, including its per-object
+	// identity and complete manifest/receipt inventory. No relaxed or invalid
+	// fixture.
 	err = platform.WriteJSON(journal, map[string]any{
-		"format": 3, "project": delivery.Project, "root": root, "receipt": receipt,
+		"format": 4, "project": delivery.Project, "root": root, "receipt": receipt,
 		"entries": entries, "token": token, "quarantine": quarantine, "phase": "prepared",
 		"receipt_sha256": platform.Hash(b), "current_generation": strings.TrimSpace(string(current)),
 		"device": uint64(stat.Dev), "inode": stat.Ino,
+		"launcher_device": uint64(launcherStat.Dev), "launcher_inode": launcherStat.Ino,
 	})
 	if err != nil {
 		t.Fatal(err)
