@@ -138,7 +138,12 @@
   replacement already ran, the previous one when it never did. A foreign
   replacement that carries identical bytes is therefore refused
   (`transaction-current-drifted`) instead of being overwritten or deleted as if
-  it were the transaction's own file. The live rollback — a later operation
+  it were the transaction's own file. A transaction that publishes the same
+  path more than once still rolls back: the ownership check accepts every
+  object the journal names at the path through any of its records, so the
+  object a later record's restore published is recognized as the
+  transaction's own intermediate state instead of refusing it and wedging
+  the scope with a journal every retry fails on identically. The live rollback — a later operation
   fails and the transaction is rolled back in the same process, without the
   recovery's verification pass first — owes the same protection: a path whose
   object the journal does not name fails the rollback (`rollback-failed`)

@@ -327,6 +327,76 @@ func TestLiveRollbackRefusesForeignReplacement(t *testing.T) {
 	}
 }
 
+// TestLiveRollbackUndoesRepeatedPublicationsOfOnePath pins the multi-record
+// shape of one path: a transaction that publishes the same path twice undoes
+// BOTH publications on its live rollback. The second undo publishes a new
+// object the first record never named — the journal names it, through the
+// later record — so the ownership check must accept every object the journal
+// names at the path through any of its records; refusing the transaction's
+// own intermediate object would leave a journal that fails identically on
+// every retry and wedge the scope.
+func TestLiveRollbackUndoesRepeatedPublicationsOfOnePath(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, target, "original", 0600)
+
+	tx, err := beginFileTransaction(scope, "test-republish", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("first"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("second"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if len(tx.journal) != 2 {
+		t.Fatalf("journal records = %d", len(tx.journal))
+	}
+	if err := tx.rollback(true); err != nil {
+		t.Fatalf("rollback refused its own repeated publication: %v", err)
+	}
+	if readTxFile(t, target) != "original" {
+		t.Fatalf("content = %q", readTxFile(t, target))
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 0 {
+		t.Fatalf("rollback left journals behind: %v", entries)
+	}
+}
+
+// TestRecoveryUndoesRepeatedPublicationsOfOnePath pins the crash shape of the
+// same transaction: a crash after the second publication leaves the second
+// published object standing, and the recovery rolls both publications back to
+// the original bytes instead of wedging on an object the first record does
+// not name.
+func TestRecoveryUndoesRepeatedPublicationsOfOnePath(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, target, "original", 0600)
+
+	tx, err := beginFileTransaction(scope, "test-republish-crash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("first"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("second"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the crash: the transaction never committed, so its pending
+	// journal is all that stands.
+	if err := recoverTransactions(scope, false); err != nil {
+		t.Fatalf("recovery refused a repeated publication: %v", err)
+	}
+	if readTxFile(t, target) != "original" {
+		t.Fatalf("content = %q", readTxFile(t, target))
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 0 {
+		t.Fatalf("recovery left journals behind: %v", entries)
+	}
+}
+
 // TestTransactionRecoveryRefusesForeignObjectAfterInterruptedRollback pins
 // the other half of the same invariant: an interrupted rollback does not
 // open the door to a foreign replacement. A file that carries the restored

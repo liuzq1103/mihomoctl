@@ -507,10 +507,16 @@ func (t *fileTransaction) verifyBackups() error {
 // transaction is being rolled back in this process — owes the same
 // protection: a foreign replacement that arrived between the publication and
 // the failure would otherwise be overwritten with the backup, or deleted
-// outright on a path the transaction created. A record written before
-// identities were journaled keeps the guarantee it was written with.
-func txUndoOwnership(record *txRecord) error {
-	if record.PrevObject == "" && record.PublishedObject == "" && record.RestoredObject == "" {
+// outright on a path the transaction created. The named identities are every
+// object the journal records at that path, through ANY of its records: the
+// rollback undoes a later record for the same path first, and that undo
+// publishes NEW objects the earlier record never saw — the restored object of
+// the later record — so an earlier record would otherwise refuse the
+// transaction's own intermediate state and wedge the scope with a journal
+// every retry fails on identically. A journal written before identities were
+// recorded keeps the guarantee it was written with.
+func txUndoOwnership(record *txRecord, named map[string]bool) error {
+	if len(named) == 0 {
 		return nil
 	}
 	object, err := txObjectIdentity(record.Path)
@@ -523,10 +529,29 @@ func txUndoOwnership(record *txRecord) error {
 		}
 		return err
 	}
-	if object == record.RestoredObject || object == record.PublishedObject || object == record.PrevObject {
+	if named[object] {
 		return nil
 	}
 	return fmt.Errorf("destination replaced by a foreign object")
+}
+
+// pathObjects returns every object identity the journal names at one path. A
+// transaction may publish the same path more than once; each publication and
+// each rollback-published restore is an object some record of the journal
+// names at that path, and every one of them is the transaction's own.
+func (t *fileTransaction) pathObjects(path string) map[string]bool {
+	named := map[string]bool{}
+	for _, record := range t.journal {
+		if record.Path != path {
+			continue
+		}
+		for _, object := range []string{record.PrevObject, record.PublishedObject, record.RestoredObject} {
+			if object != "" {
+				named[object] = true
+			}
+		}
+	}
+	return named
 }
 
 func (t *fileTransaction) undoRecord(record *txRecord) (err error) {
@@ -536,7 +561,7 @@ func (t *fileTransaction) undoRecord(record *txRecord) (err error) {
 		}
 	}()
 	path := record.Path
-	if err := txUndoOwnership(record); err != nil {
+	if err := txUndoOwnership(record, t.pathObjects(record.Path)); err != nil {
 		return err
 	}
 	switch {
