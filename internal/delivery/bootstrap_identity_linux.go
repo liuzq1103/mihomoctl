@@ -13,8 +13,9 @@ import (
 )
 
 // Capture inode identity as well as bytes. Identical bytes from a replacement
-// file do not authorize recovery to claim that file as our launcher.
-func bootstrapIdentity(p string) (bootstrapFile, error) {
+// file do not authorize recovery to claim that file as our launcher. It is a
+// variable so a test can make one inventoried object unobservable.
+var bootstrapIdentity = func(p string) (bootstrapFile, error) {
 	var out bootstrapFile
 	if e := platform.CheckPath(p); e != nil {
 		return out, e

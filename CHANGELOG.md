@@ -36,10 +36,14 @@
   authority either: it keeps the content guarantee it was written with, so a
   launcher that still hashes to the recorded digest is ours and any other
   object at the path is foreign and never removed. An installation that
-  predates the copy gets one the next time the installer sees it; a receipt
+  predates the copy gets one the next time the installer sees it — from
+  bootstrap and from the update path alike — and a receipt
   that becomes unreadable while the installer is reporting an already
   installed program is reported instead of a success the copy was silently
-  skipped for.
+  skipped for. A missing launcher is not drift: an uninstall of an
+  installation whose launcher was deleted still removes the program root,
+  because nothing at the path means nothing foreign to refuse and nothing to
+  delete.
 
 - The managed configuration and the compound service files are bound by object
   identity across every rollback path. The recovery verified each destination
@@ -123,7 +127,11 @@
   The interrupted rollback — the private `.install-abandoned-<token>` tree — is
   resumed object by object, and an object the journal never recorded is
   foreign: it survives the removal, the private directory keeps it, and the
-  scope stays usable instead of being wedged by a refusal.
+  scope stays usable instead of being wedged by a refusal. An inventoried
+  object that cannot be observed — a filesystem error, not a verdict that the
+  object is foreign — fails the abandonment and keeps the journal, instead of
+  being skipped as foreign and reporting success while an owned object is
+  still on disk.
 
 - The rollback checks every backup before it undoes anything. A backup that was
   replaced after the crash fails the whole rollback before the first restore,
@@ -154,7 +162,10 @@
   recovery's verification pass first — owes the same protection: a path whose
   object the journal does not name fails the rollback (`rollback-failed`)
   instead of being overwritten with the backup, and a foreign object on a
-  path the transaction created is not deleted. A rollback writes new objects, so the
+  path the transaction created is not deleted. The ownership of every
+  destination is verified before anything is undone, exactly as the backups
+  are, so a foreign replacement of an earlier record cannot leave a mixed
+  old/new configuration behind after the later files were already restored. A rollback writes new objects, so the
   journal names them before the rename as well: a rollback interrupted between
   restoring a file and finishing leaves a journal that recognizes its own
   restored object, and the recovery resumes the transaction instead of refusing
@@ -224,7 +235,11 @@
   `ReadWritePaths=`), because systemd splits those lists on whitespace and a
   quoted pair would hide the `:` that separates source and destination. A path
   that systemd cannot express at all is refused instead of producing a unit that
-  cannot start.
+  cannot start. A unit file an earlier development build of this project
+  rendered under the previous quoting is still recognized as this project's
+  own for the manager it was written for, so an upgrade across those builds
+  keeps managing — and can uninstall — the service it installed; the next
+  rewrite publishes the current rendering.
 
 - Independent native Go project `mihomoctl-go`, repository `liuzq1103/mihomoctl`, command `mihomoctl`.
 - Bounded official-host release downloads with explicit caller-reviewed SHA-256 for acquisition and latest updates. Remote unsigned checksums are consistency evidence, not independent trust.

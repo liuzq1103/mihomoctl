@@ -195,12 +195,21 @@ type installHooks struct {
 }
 
 func installTree(a platform.App, source string, reinstall, allowDowngrade, dry bool, hooks installHooks) (map[string]any, error) {
-	if _, e := readReceipt(a); e != nil {
+	rec, e := readReceipt(a)
+	if e != nil {
 		return nil, e
 	}
 	root := installRoot(a)
 	if !dry {
 		if e := recoverInstall(a); e != nil {
+			return nil, e
+		}
+		// An installation that predates the external record acquires it here
+		// too: the update verified the receipt under this lock, and the
+		// record is what keeps a later loss of the program root detectable
+		// and repairable. It is written before anything changes, so a failure
+		// here changes nothing, and rewriting an identical record is a no-op.
+		if e := writeInstallationRecord(a, rec); e != nil {
 			return nil, e
 		}
 	} else if _, e := os.Lstat(filepath.Join(root, "pending.json")); !os.IsNotExist(e) {

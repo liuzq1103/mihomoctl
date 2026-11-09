@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,6 +42,11 @@ type removalJournal struct {
 	// that it is still the launcher this installation owns.
 	LauncherDevice uint64 `json:"launcher_device"`
 	LauncherInode  uint64 `json:"launcher_inode"`
+	// LauncherAbsent records a removal that began while the launcher was
+	// already gone: there is no object to bind and none to remove. A file
+	// that appears at the launcher path during such a removal is foreign and
+	// is refused. A journal from before this marker always binds an object.
+	LauncherAbsent bool `json:"launcher_absent,omitempty"`
 }
 
 type uninstallHooks struct {
@@ -93,7 +99,19 @@ func collectRemoval(a platform.App) (removalJournal, error) {
 	j := removalJournal{Format: 4, Project: Project, Root: root, Entries: map[string]removalEntry{}}
 	rec, e := readReceipt(a)
 	if e != nil {
-		return j, e
+		// An absent launcher is not drift. There is no object at the path,
+		// so there is nothing foreign to refuse and nothing to delete; the
+		// uninstall owns the program root by the receipt inside it. The
+		// receipt was fully parsed before the launcher was read, so it is
+		// usable here. A launcher that is PRESENT but is not the recorded
+		// object is still refused — that is a foreign replacement.
+		var pe *platform.Error
+		if !errors.As(e, &pe) || pe.Code != "installation-launcher-drift" {
+			return j, e
+		}
+		if _, se := os.Lstat(rec.BinPath); se == nil || !os.IsNotExist(se) {
+			return j, e
+		}
 	}
 	j.Receipt = rec
 	if e = removalReceipt(a, rec); e != nil {
@@ -122,10 +140,21 @@ func collectRemoval(a platform.App) (removalJournal, error) {
 	// reproducible, so a same-byte replacement must never be deleted as if it
 	// were ours.
 	device, inode, e := removalObjectIdentity(rec.BinPath)
+	absent := false
 	if e != nil {
-		return j, e
+		if !os.IsNotExist(e) {
+			return j, e
+		}
+		// The launcher is already gone: there is no object to bind and none
+		// to remove. A file that appears at the path during the removal is a
+		// foreign object — removalLauncherOwned refuses it — and is never
+		// deleted as ours.
+		absent = true
 	}
-	if rec.LauncherDevice != 0 || rec.LauncherInode != 0 {
+	if absent {
+		j.LauncherAbsent = true
+		j.LauncherDevice, j.LauncherInode = 0, 0
+	} else if rec.LauncherDevice != 0 || rec.LauncherInode != 0 {
 		if device != rec.LauncherDevice || inode != rec.LauncherInode {
 			return j, fail("uninstall-launcher-drift")
 		}
@@ -241,7 +270,7 @@ func loadRemoval(a platform.App) (removalJournal, error) {
 		j.Quarantine != filepath.Join(a.Scope.DataRoot, ".install-remove-"+j.Token) ||
 		(j.Phase != "prepared" && j.Phase != "quarantined") ||
 		!shaPattern.MatchString(j.ReceiptHash) || !generationPattern.MatchString(j.Current) || j.Inode == 0 ||
-		j.LauncherDevice == 0 || j.LauncherInode == 0 {
+		((j.LauncherDevice == 0 || j.LauncherInode == 0) && !j.LauncherAbsent) {
 		return j, fail("uninstall-journal-invalid")
 	}
 	if e = removalReceipt(a, j.Receipt); e != nil {

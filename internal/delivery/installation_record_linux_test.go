@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/liuzq1103/mihomoctl/internal/platform"
@@ -209,6 +210,58 @@ func TestInstallRepairsAnOrphanWhileMovingToAFreeDirectory(t *testing.T) {
 	}
 	if _, e = os.Lstat(filepath.Join(other, "mihomoctl")); e != nil {
 		t.Fatal("the new launcher was not published", e)
+	}
+}
+
+// A missing launcher is not drift: nothing at the path means nothing foreign
+// to refuse and nothing to delete. The uninstall owns the program root by the
+// receipt inside it and removes the installation; a launcher that appears at
+// the path during the removal is a foreign object and is refused.
+func TestUninstallRemovesAnInstallationWhoseLauncherIsAbsent(t *testing.T) {
+	a, _ := installed(t)
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Remove(rec.BinPath); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = Uninstall(context.Background(), a, false); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = os.Stat(installRoot(a)); !os.IsNotExist(e) {
+		t.Fatal("the program root remained", e)
+	}
+	if _, e = os.Lstat(rec.BinPath); !os.IsNotExist(e) {
+		t.Fatal("the launcher path is not absent", e)
+	}
+}
+
+// An installation that predates the external record acquires it from the
+// update path as well, not only from bootstrap: whatever command ran last, a
+// later loss of the program root must stay detectable and repairable.
+func TestUpdateWritesTheExternalRecordForAPreexistingInstallation(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("native Linux manifest")
+	}
+	a, _ := installed(t)
+	if _, e := os.Lstat(installationRecordPath(a)); !os.IsNotExist(e) {
+		t.Fatal("the fixture already carries an external record", e)
+	}
+	source := fixture(t, "0.3.0", "new-binary")
+	if _, e := installTree(a, source, false, false, false, installHooks{}); e != nil {
+		t.Fatal(e)
+	}
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	stored, exists, e := loadInstallationRecord(a)
+	if e != nil || !exists {
+		t.Fatal("the update did not write the external record", e)
+	}
+	if stored.BinPath != rec.BinPath {
+		t.Fatalf("the record names %q", stored.BinPath)
 	}
 }
 

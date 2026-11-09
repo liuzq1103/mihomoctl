@@ -435,6 +435,19 @@ func (t *fileTransaction) rollback(finish bool) error {
 			safeDetail: "could not restore: " + err.Error() + "; unfinished transaction retained",
 		}
 	}
+	// The ownership of every destination is verified before anything is
+	// undone, for the same reason the backups are: the undo runs in reverse,
+	// so a foreign replacement of an earlier record is discovered only after
+	// the later files were already restored, leaving a mixed old/new
+	// configuration behind with the journal retained. Refusing before the
+	// first undo keeps the configuration uniform.
+	if err := t.verifyDestinations(); err != nil {
+		return &controlError{
+			code:       "rollback-failed",
+			rc:         exitUnverify,
+			safeDetail: "could not restore: " + err.Error() + "; unfinished transaction retained",
+		}
+	}
 	var failures []string
 	for i := len(t.journal) - 1; i >= 0; i-- {
 		record := &t.journal[i]
@@ -458,6 +471,20 @@ func (t *fileTransaction) rollback(finish bool) error {
 	if finish {
 		t.finished = true
 		t.cleanup()
+	}
+	return nil
+}
+
+// verifyDestinations checks, before the first undo, that every destination
+// still holds an object the journal names — the same all-or-nothing preflight
+// the crash recovery runs. The per-record check inside the undo stays as the
+// second gate: an object can still be replaced while the rollback runs.
+func (t *fileTransaction) verifyDestinations() error {
+	for i := range t.journal {
+		record := &t.journal[i]
+		if err := txUndoOwnership(record, t.pathObjects(record.Path)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

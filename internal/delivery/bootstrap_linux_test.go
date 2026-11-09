@@ -15,6 +15,42 @@ import (
 	"github.com/liuzq1103/mihomoctl/internal/platform"
 )
 
+// An inventoried object that cannot be OBSERVED is not an observation of a
+// foreign object. The abandonment fails and keeps the journal instead of
+// reporting success while an owned object is still on disk; only a verdict —
+// an unsafe path, an object that is not ours — skips the object.
+func TestAbandonmentKeepsTheJournalWhenAnObjectCannotBeObserved(t *testing.T) {
+	a := testApp(t)
+	root := filepath.Join(a.Scope.DataRoot, ".install-abandoned-token")
+	if e := os.MkdirAll(filepath.Join(root, "generations"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	file := filepath.Join(root, "generations", "mihomoctl")
+	if e := platform.AtomicWrite(file, []byte("staged"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	j := bootstrapJournal{Entries: map[string]bootstrapFile{
+		"generations":            {Directory: true},
+		"generations/mihomoctl":  {},
+	}}
+	original := bootstrapIdentity
+	t.Cleanup(func() { bootstrapIdentity = original })
+	bootstrapIdentity = func(p string) (bootstrapFile, error) {
+		if p == file {
+			// A filesystem error, not a verdict: the object is there but
+			// cannot be observed.
+			return bootstrapFile{}, &os.PathError{Op: "lstat", Path: p, Err: syscall.EIO}
+		}
+		return original(p)
+	}
+	if e := removeBootstrapTree(root, j); e == nil {
+		t.Fatal("the abandonment swallowed an observation failure")
+	}
+	if _, e := os.Lstat(file); e != nil {
+		t.Fatal("the owned object disappeared under an unobservable removal", e)
+	}
+}
+
 var bootstrapPhases = []string{"staged", "journal-published", "root-published", "launcher-published", "launcher-stage-unlinked", "staging-cleaned", "journal-removed"}
 
 // Exit without running defers in a separate process. This exercises lock

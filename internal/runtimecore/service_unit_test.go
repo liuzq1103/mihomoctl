@@ -85,6 +85,37 @@ func TestSystemdUnitQuotesSpacedPaths(t *testing.T) {
 	}
 }
 
+// TestOwnedUnitRecognizesTheLegacyRendering pins ownership across the
+// rendering change: a unit file an earlier development build of this project
+// wrote — the whole "source:destination" pair quoted as one — is still ours
+// for the manager it was written for, so an upgrade across development builds
+// keeps managing and can uninstall the service it installed. A foreign edit
+// of either rendering is still refused.
+func TestOwnedUnitRecognizesTheLegacyRendering(t *testing.T) {
+	a, m := fixture(t)
+	a.Scope.System = true
+	m.Core.Backend = "systemd"
+	m.Core.Binary = filepath.Join(a.Scope.DataRoot, "cores", "reviewed core", "mihomo")
+	current, e := unitText(a, m)
+	if e != nil {
+		t.Fatal(e)
+	}
+	legacy := legacyUnitText(a, m)
+	if legacy == current {
+		t.Fatal("the fixture renders both generations identically; the pin is vacuous")
+	}
+	if e := requireOwnedUnitText(a, m, current); e != nil {
+		t.Fatal(e)
+	}
+	if e := requireOwnedUnitText(a, m, legacy); e != nil {
+		t.Fatal(e)
+	}
+	foreign := strings.Replace(legacy, "RestartSec=3", "RestartSec=4", 1)
+	if e := requireOwnedUnitText(a, m, foreign); e == nil {
+		t.Fatal("a foreign edit of the legacy rendering was accepted as ours")
+	}
+}
+
 // TestSystemdUnitKeepsPercentLiteralInPathLists pins the percent handling
 // of the generated unit. systemd expands specifiers in the command line
 // settings, and an unknown specifier makes the unit fail to load, so the

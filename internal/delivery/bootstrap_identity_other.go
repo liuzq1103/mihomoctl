@@ -2,7 +2,7 @@
 
 package delivery
 
-func bootstrapIdentity(p string) (bootstrapFile, error) {
+var bootstrapIdentity = func(p string) (bootstrapFile, error) {
 	return bootstrapFile{}, usage("linux-required")
 }
 

@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -479,6 +480,24 @@ func abandonBootstrap(a platform.App, j bootstrapJournal) error {
 	return syncDir(a.Scope.StateRoot)
 }
 
+// foreignIdentity separates a deliberate verdict — this path is unsafe, or
+// the object at it is not ours — from a failure to observe the object at all.
+// Only the verdict lets an abandonment skip the object; an observation
+// failure must fail the abandonment and keep the journal, because treating
+// it as "foreign, preserved" would report success and discard the recovery
+// record while an inventoried object is still on disk and unobserved.
+func foreignIdentity(e error) bool {
+	var pe *platform.Error
+	if !errors.As(e, &pe) {
+		return false
+	}
+	switch pe.Code {
+	case "bootstrap-file-unowned", "symlink-refused", "unsafe-path":
+		return true
+	}
+	return false
+}
+
 // removeBootstrapTree removes exactly the objects the journal inventoried.
 // The inventory is the only authority: an object the journal never recorded
 // is foreign and is never removed, and the directory holding it stays as
@@ -506,6 +525,13 @@ func removeBootstrapTree(root string, j bootstrapJournal) error {
 				// An interrupted removal already deleted it.
 				continue
 			}
+			if !foreignIdentity(e) {
+				// The object could not be observed. That is not an
+				// observation of a foreign object: skipping it here would
+				// drop the journal and report success while an inventoried
+				// object is still on disk.
+				return e
+			}
 			// The path holds something the journal did not record for it: a
 			// symlink, a special file, a replacement, or an object owned by
 			// somebody else. It is foreign, and a foreign object is never
@@ -526,7 +552,16 @@ func removeBootstrapTree(root string, j bootstrapJournal) error {
 		}
 		path := filepath.Join(root, filepath.FromSlash(name))
 		got, e := bootstrapIdentity(path)
-		if e != nil || got != entry {
+		if e != nil {
+			if os.IsNotExist(e) {
+				continue
+			}
+			if !foreignIdentity(e) {
+				return e
+			}
+			continue
+		}
+		if got != entry {
 			continue
 		}
 		if e = removeEmptyDir(path); e != nil {

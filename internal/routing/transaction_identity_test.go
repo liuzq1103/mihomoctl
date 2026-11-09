@@ -397,6 +397,47 @@ func TestRecoveryUndoesRepeatedPublicationsOfOnePath(t *testing.T) {
 	}
 }
 
+// TestLiveRollbackVerifiesEveryDestinationBeforeUndoing pins the
+// all-or-nothing shape of the live rollback: the ownership of every
+// destination is checked before anything is undone, exactly as the crash
+// recovery does. Without the preflight, the reverse-order undo would restore
+// the later files first and fail on the earlier one's foreign replacement,
+// leaving a mixed old/new configuration behind with the journal retained.
+func TestLiveRollbackVerifiesEveryDestinationBeforeUndoing(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	other := filepath.Join(scope.ConfigRoot, "mihomo", "other.yaml")
+	writeTxFile(t, target, "original", 0600)
+	writeTxFile(t, other, "stable", 0600)
+
+	tx, err := beginFileTransaction(scope, "test-preflight-foreign", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("published"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(other, []byte("revised"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A foreign replacement takes the FIRST-journaled path. The rollback
+	// undoes in reverse order, so the later record would be restored before
+	// the foreign object is discovered.
+	replaceWithForeignObject(t, target, "published", tx.journal[0].PrevObject, tx.journal[0].PublishedObject)
+
+	err = tx.rollback(true)
+	mustCode(t, err, "rollback-failed")
+	if readTxFile(t, target) != "published" {
+		t.Fatal("the preflight let a foreign replacement be undone")
+	}
+	if readTxFile(t, other) != "revised" {
+		t.Fatal("the rollback restored a file before another one refused: a mixed configuration was published")
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 1 {
+		t.Fatalf("the failed rollback did not retain the journal: %v", entries)
+	}
+}
+
 // TestTransactionRecoveryRefusesForeignObjectAfterInterruptedRollback pins
 // the other half of the same invariant: an interrupted rollback does not
 // open the door to a foreign replacement. A file that carries the restored

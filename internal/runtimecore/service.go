@@ -79,6 +79,30 @@ func serviceConfig(a platform.App, m manager) string {
 	}
 	return m.Core.Config
 }
+
+// legacyUnitText renders the unit exactly as the development builds before
+// this release rendered it: every path-list entry quoted as one whole
+// "source:destination" pair, and a percent sign doubled inside it. A unit
+// file those builds published for this very manager is still this project's
+// own — it is recognized so an upgrade across development builds keeps
+// managing, updating and uninstalling the service it installed. The next
+// rewrite publishes the current rendering. Any text that matches neither
+// rendering is foreign.
+func legacyUnitText(a platform.App, m manager) string {
+	text := unitMarker + "\n[Unit]\nDescription=Managed Mihomo runtime (mihomoctl-go)\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart=" + quoteUnit(m.Core.Binary) + " -d " + quoteUnit(serviceHome(a)) + " -f " + quoteUnit(serviceConfig(a, m)) + "\nRestart=on-failure\nRestartSec=3\nUMask=0077\nNoNewPrivileges=yes\n"
+	text += "UnsetEnvironment=" + strings.Join(proxyKeys, " ") + " LD_PRELOAD LD_LIBRARY_PATH CLASH_HOME_DIR CLASH_CONFIG_FILE CLASH_CONFIG_STRING CLASH_AGE_SECRET_KEY CLASH_OVERRIDE_EXTERNAL_UI_DIR CLASH_OVERRIDE_EXTERNAL_CONTROLLER CLASH_OVERRIDE_EXTERNAL_CONTROLLER_UNIX CLASH_OVERRIDE_EXTERNAL_CONTROLLER_TLS CLASH_OVERRIDE_EXTERNAL_CONTROLLER_PIPE CLASH_OVERRIDE_EXTERNAL_CONTROLLER_ROUTING_MARK CLASH_OVERRIDE_SECRET CLASH_POST_UP CLASH_POST_DOWN\n"
+	if a.Scope.System && systemBinaryOverlay(a, m.Core.Binary) {
+		text += "TemporaryFileSystem=" + quoteUnit(a.Scope.DataRoot+":ro,mode=0755") + "\nBindReadOnlyPaths=" + quoteUnit(filepath.Join(a.Scope.DataRoot, "service-binary", "mihomo")+":"+m.Core.Binary) + "\n"
+	}
+	if a.Scope.System {
+		text += "User=" + serviceAccount + "\nGroup=" + serviceAccount + "\nCapabilityBoundingSet=\nAmbientCapabilities=\nProtectSystem=strict\nProtectHome=yes\nRuntimeDirectory=mihomoctl-go-core\nRuntimeDirectoryMode=0700\nBindPaths=" + quoteUnit(a.Scope.CoreHome()+":"+serviceHome(a)) + "\nBindReadOnlyPaths=" + quoteUnit(filepath.Join(a.Scope.CoreHome(), "managed-config.yaml")+":"+serviceConfig(a, m)) + "\nReadWritePaths=" + quoteUnit(serviceHome(a)) + "\n"
+	}
+	target := "default.target"
+	if a.Scope.System {
+		target = "multi-user.target"
+	}
+	return text + "\n[Install]\nWantedBy=" + target + "\n"
+}
 func unitText(a platform.App, m manager) (string, error) {
 	text := unitMarker + "\n[Unit]\nDescription=Managed Mihomo runtime (mihomoctl-go)\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart=" + quoteUnit(m.Core.Binary) + " -d " + quoteUnit(serviceHome(a)) + " -f " + quoteUnit(serviceConfig(a, m)) + "\nRestart=on-failure\nRestartSec=3\nUMask=0077\nNoNewPrivileges=yes\n"
 	text += "UnsetEnvironment=" + strings.Join(proxyKeys, " ") + " LD_PRELOAD LD_LIBRARY_PATH CLASH_HOME_DIR CLASH_CONFIG_FILE CLASH_CONFIG_STRING CLASH_AGE_SECRET_KEY CLASH_OVERRIDE_EXTERNAL_UI_DIR CLASH_OVERRIDE_EXTERNAL_CONTROLLER CLASH_OVERRIDE_EXTERNAL_CONTROLLER_UNIX CLASH_OVERRIDE_EXTERNAL_CONTROLLER_TLS CLASH_OVERRIDE_EXTERNAL_CONTROLLER_PIPE CLASH_OVERRIDE_EXTERNAL_CONTROLLER_ROUTING_MARK CLASH_OVERRIDE_SECRET CLASH_POST_UP CLASH_POST_DOWN\n"
@@ -215,12 +239,8 @@ func requireOwnedUnit(a platform.App, m manager) error {
 	if e != nil {
 		return e
 	}
-	text, e := unitText(a, m)
-	if e != nil {
+	if e := requireOwnedUnitText(a, m, string(b)); e != nil {
 		return e
-	}
-	if string(b) != text {
-		return platform.Usage("systemd-unit-unowned")
 	}
 	entries, e := os.ReadDir(unitPath(a) + ".d")
 	if e != nil && !os.IsNotExist(e) {
@@ -237,6 +257,20 @@ func requireOwnedUnit(a platform.App, m manager) error {
 		if e != nil || string(b) != capText {
 			return platform.Usage("systemd-dropin-unowned")
 		}
+	}
+	return nil
+}
+
+// requireOwnedUnitText decides the ownership of a unit text: the current
+// rendering, or the legacy rendering an earlier development build of this
+// project published for this very manager, is ours; anything else is foreign.
+func requireOwnedUnitText(a platform.App, m manager, text string) error {
+	current, e := unitText(a, m)
+	if e != nil {
+		return e
+	}
+	if text != current && text != legacyUnitText(a, m) {
+		return platform.Usage("systemd-unit-unowned")
 	}
 	return nil
 }
@@ -484,12 +518,11 @@ func serviceCommand(ctx context.Context, a platform.App, r platform.Request) (pl
 			if e != nil {
 				return doc, e
 			}
-			previous, e := unitText(a, oldManager)
-			if e != nil {
+			// A unit published for this manager by an earlier development
+			// build of this project is still ours; installing over it
+			// publishes the current rendering.
+			if e := requireOwnedUnitText(a, oldManager, string(old)); e != nil {
 				return doc, e
-			}
-			if string(old) != previous {
-				return doc, platform.Usage("systemd-unit-unowned")
 			}
 		} else if !os.IsNotExist(e) {
 			return doc, e
