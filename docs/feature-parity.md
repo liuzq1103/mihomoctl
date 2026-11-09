@@ -98,7 +98,7 @@
 
 0.2.0 已发布。本页不在此处标记最终平台、模型或资产 PASS；最终候选 SHA 与三家族审阅记录绑定在 `.github/release-evidence.json` 与 `.github/reviews/`，差异结果绑定在 [.github/parity-evidence.json](../.github/parity-evidence.json)，发布资产另有独立 SHA-256 审阅；工作树变化后须重新确认。
 
-最新差异记录为 `.work/parity/20261109T051131Z/`：**298 项，264 项精确匹配、34 项明确接受的架构差异（记录在案的 64 条授权差异）、0 项 FAIL，整体 PASS**；固定基线仍为上述 f33204dd。该记录保存的源码摘要为 `3cee3493d3b9840ecaa03f5bf0f51f75c42c86b7fb0f39f1e0b5b84f88714d8d`，覆盖根 `*.go`、`go.mod`、`go.sum` 与 `internal/**` 的非测试源码，用 POSIX 路径分隔符计算（在 Windows 上重算只会差在分隔符上）。同一记录内的 Go 校验为 test PASS（55.352 秒）与 vet PASS（15.675 秒），并明确记录 Node v20.18.1 的两项真实 override 端到端用例与真实 PTY 用例通过。**Linux race 因校验机上没有 cc/gcc 被记录为 UNAVAILABLE，不是 PASS，仍须 CI 完成。**
+最新差异记录为 `.work/parity/20261109T073423Z/`：**298 项，264 项精确匹配、34 项明确接受的架构差异（记录在案的 64 条授权差异）、0 项 FAIL，整体 PASS**；固定基线仍为上述 f33204dd。该记录保存的源码摘要为 `65c5026af685986344d1dc66b50518760524c1f9b9182f9d18cbc1a64fae8497`，覆盖根 `*.go`、`go.mod`、`go.sum` 与 `internal/**` 的非测试源码，用 POSIX 路径分隔符计算（在 Windows 上重算只会差在分隔符上）。同一记录内的 Go 校验为 test PASS（50.688 秒）与 vet PASS（15.124 秒），并明确记录 Node v20.18.1 的两项真实 override 端到端用例与真实 PTY 用例通过。**Linux race 因校验机上没有 cc/gcc 被记录为 UNAVAILABLE，不是 PASS，仍须 CI 完成。**
 
 先前 GLM 的 `.work/inputs/last-linux-run.txt` 记录 125 个顶层用例 PASS、无顶层 FAIL，其中包含上述 controller setup、health-check、两项真实 Node override 和 ui/dashboard 别名测试；最新差异记录也包含 Node 与 PTY 通过事件。这些证据验证相应配置行为，不证明远端探测或节点延迟。矩阵中仍明确列出的专用分支与真实流重连限制没有被本次有限差异集覆盖，不能仅凭 298 项整体 PASS 消除；最终 SHA 的 CI、独立源代码和资产审阅仍须另行完成。
 
@@ -109,6 +109,6 @@
 5. bootstrap 首次发布的持久日志、每个发布窗口崩溃、公开 install/recover/uninstall 重试及同字节外来替换拒绝，按上述专项测试保存原始运行日志并绑定候选 SHA；正常生命周期不证明崩溃一致性。首次发布前的私有随机暂存目录在无日志中断后可能保留，重试不会将其收养或猜测删除。卸载恢复的每个日志对象与启动器都按 device/inode 绑定，[TestRemovalRefusesSameByteForeignReplacement](../internal/delivery/uninstall_test.go) 覆盖"内容相同但对象不同"的替换拒绝。同样被拒绝的还有把活动配置或档案凭据指到程序树内的卸载，[TestRemovalRefusesConfigurationWithinProgram](../internal/delivery/uninstall_test.go) 覆盖 core.config 与 credentials_file 两种情形发布对象已消失的未完成发布会回滚而不是拒绝后续命令，[TestBootstrapAbandonsPublicationWhoseObjectsAreGone](../internal/delivery/bootstrap_linux_test.go) 覆盖暂存树被删与已发布根被删两种情形。
 6. 同一候选 SHA 的真实三家族审阅：`gpt-6.1-sol`、`zcode/GLM-5.3[1m]`、`minimax-cn/MiniMax-M3.1-Flash[1m]`。签入审阅与 CI 证据后自动构建草稿，不增加人工审批环境；失败、配额受限、未完成调用均不计为通过。审阅记录与报告签入 `.github/release-evidence.json` 与 `.github/reviews/`，其中 `candidate_sha` 即被审阅提交，字面 SHA 不写回被审阅的源码树。
 7. 对实际 source、basic amd64/arm64、offline amd64/arm64 的清单、来源、许可证、BUILD.json 以及独立 SHA-256 做资产审阅；公开发布由后续显式发布操作完成，草稿不是公开发布。草稿资产的 `SHA256SUMS`、`BUILD.json` 的 `source_commit` 与 `source_dirty` 必须与候选一致（`source_dirty` 为 false）。
-8. 最新 `20261109T051131Z` 差异集已 PASS 298 项（264 精确匹配 + 34 明确接受，0 FAIL）；该结果与源码摘要一并记录在 [.github/parity-evidence.json](../.github/parity-evidence.json)，源码变化时重跑。该有限集合不包含特权 systemd/TUN/SSH、交互式 TUI、远程订阅或发行下载；Node/PTY 由独立 Go 测试提供证据。不能把整体 PASS 扩大为这些未测场景均已通过。arm64 门在原生 arm 硬件上运行全部用例（含内核归属证明），不跳过任何身份用例。
+8. 最新 `20261109T073423Z` 差异集已 PASS 298 项（264 精确匹配 + 34 明确接受，0 FAIL）；该结果与源码摘要一并记录在 [.github/parity-evidence.json](../.github/parity-evidence.json)，源码变化时重跑。该有限集合不包含特权 systemd/TUN/SSH、交互式 TUI、远程订阅或发行下载；Node/PTY 由独立 Go 测试提供证据。不能把整体 PASS 扩大为这些未测场景均已通过。arm64 门在原生 arm 硬件上运行全部用例（含内核归属证明），不跳过任何身份用例。
 
 本表的具名测试索引不替代候选版本的原始日志和独立审阅报告。

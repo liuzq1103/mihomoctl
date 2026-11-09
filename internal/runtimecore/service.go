@@ -43,11 +43,18 @@ func serviceConfig(a platform.App, m manager) string {
 func unitText(a platform.App, m manager) string {
 	text := unitMarker + "\n[Unit]\nDescription=Managed Mihomo runtime (mihomoctl-go)\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart=" + quoteUnit(m.Core.Binary) + " -d " + quoteUnit(serviceHome(a)) + " -f " + quoteUnit(serviceConfig(a, m)) + "\nRestart=on-failure\nRestartSec=3\nUMask=0077\nNoNewPrivileges=yes\n"
 	text += "UnsetEnvironment=" + strings.Join(proxyKeys, " ") + " LD_PRELOAD LD_LIBRARY_PATH CLASH_HOME_DIR CLASH_CONFIG_FILE CLASH_CONFIG_STRING CLASH_AGE_SECRET_KEY CLASH_OVERRIDE_EXTERNAL_UI_DIR CLASH_OVERRIDE_EXTERNAL_CONTROLLER CLASH_OVERRIDE_EXTERNAL_CONTROLLER_UNIX CLASH_OVERRIDE_EXTERNAL_CONTROLLER_TLS CLASH_OVERRIDE_EXTERNAL_CONTROLLER_PIPE CLASH_OVERRIDE_EXTERNAL_CONTROLLER_ROUTING_MARK CLASH_OVERRIDE_SECRET CLASH_POST_UP CLASH_POST_DOWN\n"
+	// The path-list settings below (TemporaryFileSystem=, BindPaths=,
+	// BindReadOnlyPaths=, ReadWritePaths=) must stay unquoted: systemd's
+	// value parser honors double quotes and then does not split on the ":"
+	// separating source and target, so a quoted "src:dst" parses as one
+	// nonexistent path and the unit dies with 226/NAMESPACE on every start
+	// (verified against systemd 245 and 255). ExecStart= is different: its
+	// argument parsing is shell-like, so quoteUnit there is correct.
 	if a.Scope.System && systemBinaryOverlay(a, m.Core.Binary) {
-		text += "TemporaryFileSystem=" + quoteUnit(a.Scope.DataRoot+":ro,mode=0755") + "\nBindReadOnlyPaths=" + quoteUnit(filepath.Join(a.Scope.DataRoot, "service-binary", "mihomo")+":"+m.Core.Binary) + "\n"
+		text += "TemporaryFileSystem=" + a.Scope.DataRoot + ":ro,mode=0755\nBindReadOnlyPaths=" + filepath.Join(a.Scope.DataRoot, "service-binary", "mihomo") + ":" + m.Core.Binary + "\n"
 	}
 	if a.Scope.System {
-		text += "User=" + serviceAccount + "\nGroup=" + serviceAccount + "\nCapabilityBoundingSet=\nAmbientCapabilities=\nProtectSystem=strict\nProtectHome=yes\nRuntimeDirectory=mihomoctl-go-core\nRuntimeDirectoryMode=0700\nBindPaths=" + quoteUnit(a.Scope.CoreHome()+":"+serviceHome(a)) + "\nBindReadOnlyPaths=" + quoteUnit(filepath.Join(a.Scope.CoreHome(), "managed-config.yaml")+":"+serviceConfig(a, m)) + "\nReadWritePaths=" + quoteUnit(serviceHome(a)) + "\n"
+		text += "User=" + serviceAccount + "\nGroup=" + serviceAccount + "\nCapabilityBoundingSet=\nAmbientCapabilities=\nProtectSystem=strict\nProtectHome=yes\nRuntimeDirectory=mihomoctl-go-core\nRuntimeDirectoryMode=0700\nBindPaths=" + a.Scope.CoreHome() + ":" + serviceHome(a) + "\nBindReadOnlyPaths=" + filepath.Join(a.Scope.CoreHome(), "managed-config.yaml") + ":" + serviceConfig(a, m) + "\nReadWritePaths=" + serviceHome(a) + "\n"
 	}
 	target := "default.target"
 	if a.Scope.System {
