@@ -640,11 +640,20 @@ func bootstrap(ctx context.Context, a platform.App, source, binDir string, dry b
 			data["already_installed"], data["changed"] = true, false
 			// An installation that predates the record outside the program
 			// root gets one now, so a later loss of that root is still
-			// detectable and still repairable.
-			if rec, e := readReceipt(a); e == nil {
-				if e = writeInstallationRecord(a, rec); e != nil {
-					return e
-				}
+			// detectable and still repairable. The receipt was read a moment
+			// ago under this lock, so reading it again cannot legitimately
+			// fail: an unreadable receipt here is a foreign change that is
+			// reported instead of a success the record was silently skipped
+			// for.
+			if e = bootstrapCheckpoint(h, "already-installed"); e != nil {
+				return e
+			}
+			rec, e := readReceipt(a)
+			if e != nil {
+				return e
+			}
+			if e = writeInstallationRecord(a, rec); e != nil {
+				return e
 			}
 			return nil
 		}

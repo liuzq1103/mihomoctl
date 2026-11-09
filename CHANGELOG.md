@@ -30,7 +30,10 @@
   authority either: it keeps the content guarantee it was written with, so a
   launcher that still hashes to the recorded digest is ours and any other
   object at the path is foreign and never removed. An installation that
-  predates the copy gets one the next time the installer sees it.
+  predates the copy gets one the next time the installer sees it; a receipt
+  that becomes unreadable while the installer is reporting an already
+  installed program is reported instead of a success the copy was silently
+  skipped for.
 
 - A percent sign in a managed core path is rendered correctly in the unit.
   The path-list settings (`TemporaryFileSystem=`, `BindPaths=`,

@@ -413,6 +413,29 @@ func TestBootstrapResumesAnInterruptedStageAbandonment(t *testing.T) {
 	}
 }
 
+// An already-installed check reports success only while the receipt it just
+// verified stays readable: a receipt that becomes unreadable between the
+// preflight and the record copy is a foreign change that is reported, not a
+// success the external record was silently skipped for.
+func TestAlreadyInstalledReportsAnUnreadableReceipt(t *testing.T) {
+	a, _ := installed(t)
+	source := fixture(t, "0.2.0", "old-binary")
+	bin := filepath.Join(filepath.Dir(a.Scope.DataRoot), "bin")
+	hooks := bootstrapHooks{checkpoint: func(phase string) error {
+		if phase == "already-installed" {
+			return os.Remove(filepath.Join(installRoot(a), "receipt.json"))
+		}
+		return nil
+	}}
+	_, e := bootstrap(context.Background(), a, source, bin, false, hooks)
+	if e == nil {
+		t.Fatal("success reported although the receipt could not be read")
+	}
+	if exists, e := optionalExists(installationRecordPath(a)); e != nil || exists {
+		t.Fatal("a record was written from an unreadable receipt", e)
+	}
+}
+
 // An interrupted abandonment is resumed by removing exactly the objects the
 // journal inventoried. An object the journal never recorded is foreign: it
 // survives the removal, and the private abandoned directory keeps it instead
