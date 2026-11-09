@@ -25,11 +25,15 @@ jobs:
           ls -l /usr/bin/sleep /bin/sleep 2>&1
           readlink -f /usr/bin/sleep
       - name: Routing fixture test WITHOUT -race
+        continue-on-error: true
         run: go test ./internal/routing -run 'TestControllerStatusEnvelope' -count=1 -v
       - name: Routing fixture test WITH -race
+        continue-on-error: true
         run: go test -race ./internal/routing -run 'TestControllerStatusEnvelope' -count=1 -v
       - name: fd probe
         run: go run ./scripts/debug/fdprobe
+      - name: fd probe with -race
+        run: go run -race ./scripts/debug/fdprobe
   qemu-arm64:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -45,7 +49,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/toolchain"
           docker cp "$toolchain:/usr/local/go" "$RUNNER_TEMP/toolchain/go"
           docker rm "$toolchain"
-          curl -fsSL -o mihomo-arm64.gz https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-arm64-compatible-v1.19.33.gz
+          curl -fsSL -o mihomo-arm64.gz https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-arm64-v1.19.33.gz
           sha256sum mihomo-arm64.gz
           docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work \
             -v "$RUNNER_TEMP/toolchain/go:/usr/local/go:ro" \
@@ -71,9 +75,9 @@ jobs:
               sleep 1
               cat /tmp/mihomo.log || true
               echo "== routing fixture test under QEMU non-root =="
-              go test ./internal/routing -run "TestControllerStatusEnvelope" -count=1 -v
+              go test ./internal/routing -run "TestControllerStatusEnvelope" -count=1 -v || true
               echo "== lifecycle test under emulation =="
-              MIHOMOCTL_GO_TEST_EMULATED=1 MIHOMOCTL_GO_TEST_CORE=/tmp/mihomo go test ./internal/runtimecore -run "TestNativeLifecycleAndAuthentication" -count=1 -v 2>&1 | tail -40
+              MIHOMOCTL_GO_TEST_EMULATED=1 MIHOMOCTL_GO_TEST_CORE=/tmp/mihomo go test ./internal/runtimecore -run "TestNativeLifecycleAndAuthentication" -count=1 -v 2>&1 | tail -40 || true
             '
   arm-native:
     runs-on: ubuntu-24.04-arm

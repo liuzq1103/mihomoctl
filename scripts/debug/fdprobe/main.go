@@ -54,8 +54,10 @@ func fdInodes(pid int) map[string]bool {
 
 func listenTable(pid int, inodes map[string]bool) {
 	for _, file := range []string{"tcp", "tcp6"} {
-		b, e := os.ReadFile(fmt.Sprintf("/proc/%d/net/%s", pid, file))
+		p := fmt.Sprintf("/proc/%d/net/%s", pid, file)
+		b, e := os.ReadFile(p)
 		if e != nil {
+			fmt.Printf("  READ ERROR %s: %v\n", p, e)
 			continue
 		}
 		for _, line := range strings.Split(string(b), "\n") {
