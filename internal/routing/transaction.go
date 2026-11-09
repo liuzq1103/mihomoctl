@@ -501,6 +501,34 @@ func (t *fileTransaction) verifyBackups() error {
 	return nil
 }
 
+// txUndoOwnership refuses to undo a path that holds an object the journal
+// does not name. The crash recovery verifies every destination before it
+// undoes anything; the live rollback path — a later operation failed and the
+// transaction is being rolled back in this process — owes the same
+// protection: a foreign replacement that arrived between the publication and
+// the failure would otherwise be overwritten with the backup, or deleted
+// outright on a path the transaction created. A record written before
+// identities were journaled keeps the guarantee it was written with.
+func txUndoOwnership(record *txRecord) error {
+	if record.PrevObject == "" && record.PublishedObject == "" && record.RestoredObject == "" {
+		return nil
+	}
+	object, err := txObjectIdentity(record.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Nothing stands at the path, so there is no foreign object to
+			// protect: a created publication that is already gone, or a
+			// deletion that took its object with it, undoes cleanly.
+			return nil
+		}
+		return err
+	}
+	if object == record.RestoredObject || object == record.PublishedObject || object == record.PrevObject {
+		return nil
+	}
+	return fmt.Errorf("destination replaced by a foreign object")
+}
+
 func (t *fileTransaction) undoRecord(record *txRecord) (err error) {
 	defer func() {
 		if recover() != nil {
@@ -508,6 +536,9 @@ func (t *fileTransaction) undoRecord(record *txRecord) (err error) {
 		}
 	}()
 	path := record.Path
+	if err := txUndoOwnership(record); err != nil {
+		return err
+	}
 	switch {
 	case record.Op == "publish" && record.Created:
 		info, statErr := os.Lstat(path)

@@ -246,6 +246,56 @@ func TestTransactionRecoveryRefusesAReplacedBackup(t *testing.T) {
 	}
 }
 
+// TestLiveRollbackRefusesForeignReplacement pins the ownership invariant on
+// the live rollback path: a transaction whose later operation fails rolls
+// back in this process, and the crash recovery's destination verification
+// does not run first. A foreign replacement that arrived between the
+// publication and the failure is not overwritten with the backup, and a
+// foreign object on a path the transaction created is not deleted.
+func TestLiveRollbackRefusesForeignReplacement(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, target, "original", 0600)
+	created := filepath.Join(scope.ConfigRoot, "mihomo", "created.yaml")
+
+	tx, err := beginFileTransaction(scope, "test-live-foreign", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("published"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(created, []byte("new file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Foreign processes replace the published object and take the created
+	// path while the transaction is still live. Both foreign files are
+	// created while the objects they replace are still standing, so they are
+	// new objects, not recycled identities.
+	foreign := target + ".foreign"
+	writeTxFile(t, foreign, "published", 0600)
+	if err := os.Rename(foreign, target); err != nil {
+		t.Fatal(err)
+	}
+	taken := created + ".foreign"
+	writeTxFile(t, taken, "foreign content", 0600)
+	if err := os.Rename(taken, created); err != nil {
+		t.Fatal(err)
+	}
+
+	err = tx.rollback(true)
+	mustCode(t, err, "rollback-failed")
+	if readTxFile(t, target) != "published" {
+		t.Fatal("the live rollback overwrote a foreign replacement")
+	}
+	if readTxFile(t, created) != "foreign content" {
+		t.Fatal("the live rollback deleted a foreign object on the created path")
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 1 {
+		t.Fatalf("the failed rollback did not retain the journal: %v", entries)
+	}
+}
+
 // TestTransactionRecoveryRefusesForeignObjectAfterInterruptedRollback pins
 // the other half of the same invariant: an interrupted rollback does not
 // open the door to a foreign replacement. A file that carries the restored

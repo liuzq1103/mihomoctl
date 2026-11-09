@@ -123,7 +123,12 @@
   replacement already ran, the previous one when it never did. A foreign
   replacement that carries identical bytes is therefore refused
   (`transaction-current-drifted`) instead of being overwritten or deleted as if
-  it were the transaction's own file. A rollback writes new objects, so the
+  it were the transaction's own file. The live rollback — a later operation
+  fails and the transaction is rolled back in the same process, without the
+  recovery's verification pass first — owes the same protection: a path whose
+  object the journal does not name fails the rollback (`rollback-failed`)
+  instead of being overwritten with the backup, and a foreign object on a
+  path the transaction created is not deleted. A rollback writes new objects, so the
   journal names them before the rename as well: a rollback interrupted between
   restoring a file and finishing leaves a journal that recognizes its own
   restored object, and the recovery resumes the transaction instead of refusing
