@@ -26,7 +26,7 @@ jobs:
           readlink -f /usr/bin/sleep
       - name: Routing fixture test WITHOUT -race
         continue-on-error: true
-        run: go test ./internal/routing -run 'TestControllerStatusEnvelope' -count=1 -v
+        run: go test ./internal/routing -run 'TestDebugControllerOwnership|TestControllerStatusEnvelope' -count=1 -v
       - name: Routing fixture test WITH -race
         continue-on-error: true
         run: go test -race ./internal/routing -run 'TestControllerStatusEnvelope' -count=1 -v
