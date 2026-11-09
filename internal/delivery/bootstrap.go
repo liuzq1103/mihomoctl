@@ -597,7 +597,14 @@ func bootstrap(ctx context.Context, a platform.App, source, binDir string, dry b
 			if e != nil {
 				return false, e
 			}
-			if rec.BinPath != bin || rec.InstallationID == "" || id != bootstrapManifestID(m) {
+			// A receipt from before the installation-id existed is accepted
+			// here as well: readReceipt already verified the launcher under
+			// the guarantee that receipt was written with — content, exactly
+			// as the release that wrote it verified it — and the manifest
+			// still pins the root to the source being installed. Refusing it
+			// would leave a base-protocol installation unable to acquire the
+			// external record that outlives its program root.
+			if rec.BinPath != bin || id != bootstrapManifestID(m) {
 				return false, fail("installation-root-exists")
 			}
 			if _, e = collectRemoval(a); e != nil {

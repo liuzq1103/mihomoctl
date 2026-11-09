@@ -461,6 +461,33 @@ func commitArtifact(a platform.App, p, tmp string, remove bool) error {
 	return syncDirectory(filepath.Dir(p))
 }
 
+// verifyUndoObject refuses to undo a path that holds an object the journal
+// does not name. The recovery verifies every destination before it undoes
+// anything; the immediate rollback that runs when a later publication fails
+// owes the same protection: a foreign replacement that arrived between the
+// publication and the failure would otherwise be overwritten or removed as
+// if it were the transaction's own file. Records written before identities
+// were journaled keep the guarantee they were written with.
+func verifyUndoObject(f fileSnapshot) error {
+	if f.PrevObject == "" && f.PublishedObject == "" && f.RestoredObject == "" {
+		return nil
+	}
+	object, oe := platform.ObjectIdentity(f.Path)
+	if oe != nil {
+		if os.IsNotExist(oe) {
+			// Nothing stands at the path, so there is no foreign object to
+			// protect: a created publication that is already gone, or a
+			// deletion that took its object with it, undoes cleanly.
+			return nil
+		}
+		return oe
+	}
+	if object == f.PublishedObject || object == f.PrevObject || object == f.RestoredObject {
+		return nil
+	}
+	return platform.Usage("transaction-conflict")
+}
+
 // restoreFiles publishes the recorded original bytes. A rollback publishes a
 // NEW object, so the journal names it before the rename: a recovery that is
 // interrupted between the restore and the journal removal recognizes its own
@@ -468,6 +495,9 @@ func commitArtifact(a platform.App, p, tmp string, remove bool) error {
 func restoreFiles(a platform.App, j journal) error {
 	for i := len(j.Files) - 1; i >= 0; i-- {
 		f := j.Files[i]
+		if e := verifyUndoObject(f); e != nil {
+			return e
+		}
 		if !f.Existed {
 			// The file did not exist before the transaction, so the rollback
 			// removes it instead of publishing an object.

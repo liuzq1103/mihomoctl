@@ -436,6 +436,34 @@ func TestAlreadyInstalledReportsAnUnreadableReceipt(t *testing.T) {
 	}
 }
 
+// An installation published by the previous protocol — its receipt carries
+// no installation id and no launcher object — is still recognized as already
+// installed, and it receives the external record that outlives its program
+// root, so a later loss of that root stays detectable and repairable.
+func TestLegacyInstallationIsAlreadyInstalled(t *testing.T) {
+	a, _ := installed(t)
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// The receipt exactly as the previous protocol wrote it.
+	legacy := Receipt{Format: 1, Project: Project, BinPath: rec.BinPath, LauncherSHA256: rec.LauncherSHA256}
+	if e = platform.WriteJSON(filepath.Join(installRoot(a), "receipt.json"), legacy); e != nil {
+		t.Fatal(e)
+	}
+	source := fixture(t, "0.2.0", "old-binary")
+	data, e := bootstrap(context.Background(), a, source, filepath.Dir(rec.BinPath), false, bootstrapHooks{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if data["already_installed"] != true {
+		t.Fatalf("data = %v", data)
+	}
+	if _, exists, e := loadInstallationRecord(a); e != nil || !exists {
+		t.Fatal("the external record was not written from the legacy receipt", e)
+	}
+}
+
 // An interrupted abandonment is resumed by removing exactly the objects the
 // journal inventoried. An object the journal never recorded is foreign: it
 // survives the removal, and the private abandoned directory keeps it instead

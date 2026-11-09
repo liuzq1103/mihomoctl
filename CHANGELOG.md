@@ -35,6 +35,21 @@
   installed program is reported instead of a success the copy was silently
   skipped for.
 
+- The managed configuration and the compound service files are bound by object
+  identity across every rollback path. The recovery verified each destination
+  before undoing it; the immediate rollback that runs in-process when a later
+  publication fails now refuses a path whose object the journal does not name
+  (`transaction-conflict`) instead of overwriting or removing whatever stands
+  there — including a path the transaction created. Records written before
+  identities were journaled keep the guarantee they were written with.
+
+- An installation published by the previous protocol is still recognized as
+  already installed. Its receipt carries no installation id and no launcher
+  object; the installer verifies it under the guarantee that receipt was
+  written with — content, exactly as the release that wrote it did — and
+  writes the external record for it, so a later loss of the program root
+  stays detectable and repairable instead of wedging on a surviving launcher.
+
 - A percent sign in a managed core path is rendered correctly in the unit.
   The path-list settings (`TemporaryFileSystem=`, `BindPaths=`,
   `BindReadOnlyPaths=`, `ReadWritePaths=`) keep it literal, because systemd

@@ -3,10 +3,52 @@
 package routing
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// replaceWithForeignObject replaces the file at path with a new object that
+// carries the given bytes but none of the identities named in forbidden.
+// Every object that ever stands at the path is pinned by a hard link first: a
+// rename over the path frees the standing object's inode, and the next
+// allocation can hand it — or any journal identity freed earlier — straight
+// back, which would let the loop oscillate between the journal's own
+// identities forever. Pinning keeps every candidate alive, so the allocator
+// must eventually produce an identity the journal does not name. These tests
+// pin refusals, not the allocator's luck.
+func replaceWithForeignObject(t *testing.T, path, content string, forbidden ...string) string {
+	t.Helper()
+	for attempt := 0; ; attempt++ {
+		pinned := fmt.Sprintf("%s.pinned%d", path, attempt)
+		if err := os.Link(path, pinned); err != nil {
+			t.Fatal(err)
+		}
+		foreign := fmt.Sprintf("%s.foreign%d", path, attempt)
+		writeTxFile(t, foreign, content, 0600)
+		if err := os.Rename(foreign, path); err != nil {
+			t.Fatal(err)
+		}
+		object, err := txObjectIdentity(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh := true
+		for _, named := range forbidden {
+			if object == named {
+				fresh = false
+				break
+			}
+		}
+		if fresh {
+			return object
+		}
+		if attempt > 8 {
+			t.Fatalf("could not replace %s with an object the journal does not name (last: %s)", path, object)
+		}
+	}
+}
 
 // TestTransactionRecoveryRefusesForeignObjectWithIdenticalBytes pins the
 // ownership invariant of the recovery: a pending transaction only undoes the
@@ -31,18 +73,7 @@ func TestTransactionRecoveryRefusesForeignObjectWithIdenticalBytes(t *testing.T)
 	}
 	// A foreign process replaces the published file with a new object that
 	// carries exactly the same bytes.
-	foreign := target + ".foreign"
-	writeTxFile(t, foreign, "after publication", 0600)
-	if err := os.Rename(foreign, target); err != nil {
-		t.Fatal(err)
-	}
-	replacement, err := txObjectIdentity(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replacement == published {
-		t.Fatal("the replacement did not create a new object")
-	}
+	replaceWithForeignObject(t, target, "after publication", tx.journal[0].PrevObject, tx.journal[0].PublishedObject)
 
 	err = recoverTransactions(scope, false)
 	mustCode(t, err, "transaction-current-drifted")
@@ -81,7 +112,8 @@ func TestTransactionRecoveryAcceptsIdenticalContentPublication(t *testing.T) {
 	}
 }
 
-// TestTransactionJournalRecordsObjectIdentities pins the write-ahead record:// the journal names the object that was published before the rename, so the
+// TestTransactionJournalRecordsObjectIdentities pins the write-ahead record:
+// the journal names the object that was published before the rename, so the
 // recovery can tell it apart from a replacement afterwards.
 func TestTransactionJournalRecordsObjectIdentities(t *testing.T) {
 	scope := txScope(t)
@@ -269,14 +301,13 @@ func TestLiveRollbackRefusesForeignReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Foreign processes replace the published object and take the created
-	// path while the transaction is still live. Both foreign files are
-	// created while the objects they replace are still standing, so they are
-	// new objects, not recycled identities.
-	foreign := target + ".foreign"
-	writeTxFile(t, foreign, "published", 0600)
-	if err := os.Rename(foreign, target); err != nil {
-		t.Fatal(err)
-	}
+	// path while the transaction is still live. The replacement at the
+	// published path is built to name none of the journal identities: the
+	// published object is still standing, but the previous one was freed by
+	// the publication and could otherwise be handed back. The foreign file
+	// on the created path is created while the object it replaces is still
+	// standing, and that object is the only identity its record names.
+	replaceWithForeignObject(t, target, "published", tx.journal[0].PrevObject, tx.journal[0].PublishedObject)
 	taken := created + ".foreign"
 	writeTxFile(t, taken, "foreign content", 0600)
 	if err := os.Rename(taken, created); err != nil {
@@ -316,24 +347,22 @@ func TestTransactionRecoveryRefusesForeignObjectAfterInterruptedRollback(t *test
 		t.Fatal(err)
 	}
 	// A foreign process replaces the restored file with a new object that
-	// carries exactly the same bytes.
-	foreign := target + ".foreign"
-	writeTxFile(t, foreign, "original", 0600)
-	if err := os.Rename(foreign, target); err != nil {
-		t.Fatal(err)
-	}
-	replacement, err := txObjectIdentity(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replacement == tx.journal[0].RestoredObject {
-		t.Fatal("the replacement did not create a new object")
-	}
+	// carries exactly the same bytes and none of the identities the journal
+	// names.
+	record := &tx.journal[0]
+	replacement := replaceWithForeignObject(t, target, "original", record.PrevObject, record.PublishedObject, record.RestoredObject)
 
 	err = recoverTransactions(scope, false)
 	mustCode(t, err, "transaction-current-drifted")
 	if readTxFile(t, target) != "original" {
 		t.Fatal("recovery overwrote a foreign replacement")
+	}
+	standing, err := txObjectIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if standing != replacement {
+		t.Fatal("recovery replaced the foreign object")
 	}
 	if entries := backupsEntries(t, scope); len(entries) != 1 {
 		t.Fatalf("drifted journal was not retained: %v", entries)
