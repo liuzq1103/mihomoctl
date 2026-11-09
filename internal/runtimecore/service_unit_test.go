@@ -1,0 +1,97 @@
+package runtimecore
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// TestSystemdPathValueQuotesOnlyWhatNeedsIt pins the rendering of a path
+// for a systemd path-list setting: a plain path stays untouched, a path that
+// systemd would split on is quoted as one word, and a path that cannot be
+// expressed at all is refused.
+func TestSystemdPathValueQuotesOnlyWhatNeedsIt(t *testing.T) {
+	plain, e := systemdPathValue("/var/lib/mihomoctl-go/cores/v1/mihomo")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if plain != "/var/lib/mihomoctl-go/cores/v1/mihomo" {
+		t.Fatalf("plain path = %q", plain)
+	}
+	spaced, e := systemdPathValue("/var/lib/mihomoctl-go/cores/reviewed core/mihomo")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if spaced != `"/var/lib/mihomoctl-go/cores/reviewed core/mihomo"` {
+		t.Fatalf("spaced path = %q", spaced)
+	}
+	if _, e = systemdPathValue("/var/lib/mihomoctl-go/cores/re\"viewed/mihomo"); e == nil {
+		t.Fatal("a path with a quote was accepted")
+	}
+	if _, e = systemdPathValue("/var/lib/mihomoctl-go/cores/re\tviewed/mihomo"); e == nil {
+		t.Fatal("a path with a tab was accepted")
+	}
+}
+
+// TestSystemdUnitQuotesSpacedPaths pins the unit text for a core path that
+// contains a space. systemd splits a path list on whitespace, so the
+// destination has to be quoted; quoting the whole "source:destination" pair
+// would hide the separator, so each side is quoted on its own.
+func TestSystemdUnitQuotesSpacedPaths(t *testing.T) {
+	a, m := fixture(t)
+	a.Scope.System = true
+	m.Core.Backend = "systemd"
+	m.Core.Binary = filepath.Join(a.Scope.DataRoot, "cores", "reviewed core", "mihomo")
+	unit, e := unitText(a, m)
+	if e != nil {
+		t.Fatal(e)
+	}
+	stagedPath := filepath.Join(a.Scope.DataRoot, "service-binary", "mihomo")
+	staged, e := systemdPathValue(stagedPath)
+	if e != nil {
+		t.Fatal(e)
+	}
+	published, e := systemdPathValue(m.Core.Binary)
+	if e != nil {
+		t.Fatal(e)
+	}
+	want := "BindReadOnlyPaths=" + staged + ":" + published
+	if !strings.Contains(unit, want) {
+		t.Fatalf("unit does not carry %q:\n%s", want, unit)
+	}
+	if !strings.HasPrefix(published, `"`) || !strings.HasSuffix(published, `"`) {
+		t.Fatalf("a path with a space was not quoted: %q", published)
+	}
+	// No path-list value may carry a raw space outside quotes: systemd would
+	// split it and the mount would not be established.
+	for _, line := range strings.Split(unit, "\n") {
+		if !strings.HasPrefix(line, "BindReadOnlyPaths=") && !strings.HasPrefix(line, "BindPaths=") &&
+			!strings.HasPrefix(line, "ReadWritePaths=") && !strings.HasPrefix(line, "TemporaryFileSystem=") {
+			continue
+		}
+		quoted := false
+		for _, r := range line {
+			switch r {
+			case '"':
+				quoted = !quoted
+			case ' ':
+				if !quoted {
+					t.Fatalf("path list value carries a raw space: %q", line)
+				}
+			}
+		}
+	}
+}
+
+// TestSystemdUnitRefusesUnrepresentablePath pins the refusal of a path
+// that systemd cannot express in a path list: the unit is never written
+// with a path that would make the service impossible to start.
+func TestSystemdUnitRefusesUnrepresentablePath(t *testing.T) {
+	a, m := fixture(t)
+	a.Scope.System = true
+	m.Core.Backend = "systemd"
+	m.Core.Binary = filepath.Join(a.Scope.DataRoot, "cores", "re\"viewed", "mihomo")
+	if _, e := unitText(a, m); e == nil {
+		t.Fatal("a path that cannot be expressed was accepted")
+	}
+}

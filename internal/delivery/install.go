@@ -21,6 +21,13 @@ type Receipt struct {
 	BinPath        string `json:"bin_path"`
 	LauncherSHA256 string `json:"launcher_sha256"`
 	InstallationID string `json:"installation_id,omitempty"`
+	// The launcher object this installation published. The launcher bytes
+	// are fully reproducible, so they prove nothing about ownership; the
+	// device and inode identify the exact object, and a replacement file
+	// carrying identical bytes is a different object that this installation
+	// never adopted.
+	LauncherDevice uint64 `json:"launcher_device"`
+	LauncherInode  uint64 `json:"launcher_inode"`
 }
 
 type pending struct {
@@ -54,6 +61,17 @@ func readReceipt(a platform.App) (Receipt, error) {
 	}
 	b, e = platform.ReadPrivate(rec.BinPath)
 	if e != nil || platform.Hash(b) != rec.LauncherSHA256 {
+		return rec, fail("installation-launcher-drift")
+	}
+	// The launcher bytes are reproducible, so they say nothing about who owns
+	// the file at the path. Only the object does: the receipt binds the exact
+	// launcher this installation published, and a replacement carrying the
+	// same bytes is never adopted as ours.
+	device, inode, e := launcherIdentity(rec.BinPath)
+	if e != nil {
+		return rec, fail("installation-launcher-drift")
+	}
+	if device != 0 && (device != rec.LauncherDevice || inode != rec.LauncherInode) {
 		return rec, fail("installation-launcher-drift")
 	}
 	return rec, nil

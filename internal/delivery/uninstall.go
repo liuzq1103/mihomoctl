@@ -117,13 +117,18 @@ func collectRemoval(a platform.App) (removalJournal, error) {
 	if e != nil {
 		return j, e
 	}
-	// Record the launcher object itself, not just its bytes. The launcher script
-	// is fully reproducible, so a same-byte replacement must never be deleted
-	// as if it were ours.
-	j.LauncherDevice, j.LauncherInode, e = removalObjectIdentity(rec.BinPath)
+	// Record the launcher object this installation published, not the object
+	// that happens to sit at the path now. The launcher script is fully
+	// reproducible, so a same-byte replacement must never be deleted as if it
+	// were ours.
+	device, inode, e := removalObjectIdentity(rec.BinPath)
 	if e != nil {
 		return j, e
 	}
+	if device != rec.LauncherDevice || inode != rec.LauncherInode {
+		return j, fail("uninstall-launcher-drift")
+	}
+	j.LauncherDevice, j.LauncherInode = rec.LauncherDevice, rec.LauncherInode
 	children, e := os.ReadDir(root)
 	if e != nil {
 		return j, e

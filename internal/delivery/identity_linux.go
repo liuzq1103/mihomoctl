@@ -47,6 +47,13 @@ func removalObjectIdentity(p string) (uint64, uint64, error) {
 	return uint64(s.Dev), s.Ino, nil
 }
 
+// launcherIdentity returns the device and inode of the launcher object. The
+// receipt binds that pair, so a replacement file carrying identical bytes is
+// recognized as a different object instead of our launcher.
+func launcherIdentity(p string) (uint64, uint64, error) {
+	return removalObjectIdentity(p)
+}
+
 func trustedVersionBinary(p string, system bool) error {
 	if !filepath.IsAbs(p) || filepath.Clean(p) != p {
 		return fail("core-path-untrusted")

@@ -63,7 +63,10 @@ func TestPrivilegedSystemdTunAndSSH(t *testing.T) {
 		t.Fatal("both non-root accounts must pass before service/TUN testing")
 	}
 	privilegedStep(t, "service-install-start-status", func(t *testing.T) {
-		systemCore := filepath.Join(a.Scope.DataRoot, "cores", "ci-reviewed", "mihomo")
+		// The core path carries a space on purpose: systemd splits a path
+		// list on whitespace, so the generated unit must quote the
+		// destination of the executable bind or the service cannot start.
+		systemCore := filepath.Join(a.Scope.DataRoot, "cores", "ci reviewed", "mihomo")
 		if e := platform.PrivateDir(filepath.Dir(systemCore)); e != nil {
 			t.Fatal(e)
 		}

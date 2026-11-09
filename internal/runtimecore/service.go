@@ -34,33 +34,101 @@ func quoteUnit(s string) string {
 	s = strings.ReplaceAll(s, "\"", "\\\"")
 	return "\"" + s + "\""
 }
+
+// systemdPathValue renders one path as a word of a systemd path-list setting
+// (TemporaryFileSystem=, BindPaths=, BindReadOnlyPaths=, ReadWritePaths=).
+// systemd splits such a list on whitespace and on the ":" that separates the
+// source from the destination, so a path that contains a space has to be
+// quoted. Quoting the whole "source:destination" pair would hide the
+// separator and break the mount, so each side is quoted on its own and the
+// separator stays between them. A quote, a tab or a line break cannot be
+// expressed at all, and such a path is refused instead of producing a unit
+// that cannot start (verified on systemd 249 and 255).
+func systemdPathValue(p string) (string, error) {
+	if strings.ContainsAny(p, "\"\n\r\t") {
+		return "", platform.UsageDetail("config-invalid",
+			"the path cannot be written into a systemd unit: "+p,
+			"choose a path without quotes, tabs or line breaks")
+	}
+	if !strings.ContainsFunc(p, systemdPathNeedsQuote) {
+		return p, nil
+	}
+	return "\"" + strings.ReplaceAll(p, "\\", "\\\\") + "\"", nil
+}
+
+// systemdPathNeedsQuote reports whether a path holds a character that
+// systemd's word splitting acts on. Everything outside the plain path
+// characters is quoted, so a space, a colon or a backslash stays inside one
+// word.
+func systemdPathNeedsQuote(r rune) bool {
+	if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+		return false
+	}
+	return !strings.ContainsRune("/._-+,@", r)
+}
 func serviceConfig(a platform.App, m manager) string {
 	if a.Scope.System {
 		return filepath.Join(serviceHome(a), "managed-config.yaml")
 	}
 	return m.Core.Config
 }
-func unitText(a platform.App, m manager) string {
+func unitText(a platform.App, m manager) (string, error) {
 	text := unitMarker + "\n[Unit]\nDescription=Managed Mihomo runtime (mihomoctl-go)\nAfter=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart=" + quoteUnit(m.Core.Binary) + " -d " + quoteUnit(serviceHome(a)) + " -f " + quoteUnit(serviceConfig(a, m)) + "\nRestart=on-failure\nRestartSec=3\nUMask=0077\nNoNewPrivileges=yes\n"
 	text += "UnsetEnvironment=" + strings.Join(proxyKeys, " ") + " LD_PRELOAD LD_LIBRARY_PATH CLASH_HOME_DIR CLASH_CONFIG_FILE CLASH_CONFIG_STRING CLASH_AGE_SECRET_KEY CLASH_OVERRIDE_EXTERNAL_UI_DIR CLASH_OVERRIDE_EXTERNAL_CONTROLLER CLASH_OVERRIDE_EXTERNAL_CONTROLLER_UNIX CLASH_OVERRIDE_EXTERNAL_CONTROLLER_TLS CLASH_OVERRIDE_EXTERNAL_CONTROLLER_PIPE CLASH_OVERRIDE_EXTERNAL_CONTROLLER_ROUTING_MARK CLASH_OVERRIDE_SECRET CLASH_POST_UP CLASH_POST_DOWN\n"
 	// The path-list settings below (TemporaryFileSystem=, BindPaths=,
-	// BindReadOnlyPaths=, ReadWritePaths=) must stay unquoted: systemd's
-	// value parser honors double quotes and then does not split on the ":"
-	// separating source and target, so a quoted "src:dst" parses as one
-	// nonexistent path and the unit dies with 226/NAMESPACE on every start
-	// (verified against systemd 245 and 255). ExecStart= is different: its
-	// argument parsing is shell-like, so quoteUnit there is correct.
+	// BindReadOnlyPaths=, ReadWritePaths=) are whitespace-separated lists
+	// whose entries are "source:destination" pairs. systemd's value parser
+	// honors double quotes and then does not split on the ":" separating
+	// source and target, so a quoted "src:dst" parses as one nonexistent
+	// path and the unit dies with 226/NAMESPACE on every start (verified
+	// against systemd 245 and 255). A path that contains a space is the
+	// other half of the same rule: it has to be quoted, but each side of
+	// the pair on its own so that the separator in between survives.
+	// ExecStart= is different: its argument parsing is shell-like, so
+	// quoteUnit there is correct.
 	if a.Scope.System && systemBinaryOverlay(a, m.Core.Binary) {
-		text += "TemporaryFileSystem=" + a.Scope.DataRoot + ":ro,mode=0755\nBindReadOnlyPaths=" + filepath.Join(a.Scope.DataRoot, "service-binary", "mihomo") + ":" + m.Core.Binary + "\n"
+		root, e := systemdPathValue(a.Scope.DataRoot)
+		if e != nil {
+			return "", e
+		}
+		staged, e := systemdPathValue(filepath.Join(a.Scope.DataRoot, "service-binary", "mihomo"))
+		if e != nil {
+			return "", e
+		}
+		published, e := systemdPathValue(m.Core.Binary)
+		if e != nil {
+			return "", e
+		}
+		text += "TemporaryFileSystem=" + root + ":ro,mode=0755\n"
+		text += "BindReadOnlyPaths=" + staged + ":" + published + "\n"
 	}
 	if a.Scope.System {
-		text += "User=" + serviceAccount + "\nGroup=" + serviceAccount + "\nCapabilityBoundingSet=\nAmbientCapabilities=\nProtectSystem=strict\nProtectHome=yes\nRuntimeDirectory=mihomoctl-go-core\nRuntimeDirectoryMode=0700\nBindPaths=" + a.Scope.CoreHome() + ":" + serviceHome(a) + "\nBindReadOnlyPaths=" + filepath.Join(a.Scope.CoreHome(), "managed-config.yaml") + ":" + serviceConfig(a, m) + "\nReadWritePaths=" + serviceHome(a) + "\n"
+		coreHome, e := systemdPathValue(a.Scope.CoreHome())
+		if e != nil {
+			return "", e
+		}
+		home, e := systemdPathValue(serviceHome(a))
+		if e != nil {
+			return "", e
+		}
+		managed, e := systemdPathValue(filepath.Join(a.Scope.CoreHome(), "managed-config.yaml"))
+		if e != nil {
+			return "", e
+		}
+		active, e := systemdPathValue(serviceConfig(a, m))
+		if e != nil {
+			return "", e
+		}
+		text += "User=" + serviceAccount + "\nGroup=" + serviceAccount + "\nCapabilityBoundingSet=\nAmbientCapabilities=\nProtectSystem=strict\nProtectHome=yes\nRuntimeDirectory=mihomoctl-go-core\nRuntimeDirectoryMode=0700\n"
+		text += "BindPaths=" + coreHome + ":" + home + "\n"
+		text += "BindReadOnlyPaths=" + managed + ":" + active + "\n"
+		text += "ReadWritePaths=" + home + "\n"
 	}
 	target := "default.target"
 	if a.Scope.System {
 		target = "multi-user.target"
 	}
-	return text + "\n[Install]\nWantedBy=" + target + "\n"
+	return text + "\n[Install]\nWantedBy=" + target + "\n", nil
 }
 func serviceHome(a platform.App) string {
 	if a.Scope.System {
@@ -68,6 +136,7 @@ func serviceHome(a platform.App) string {
 	}
 	return a.Scope.CoreHome()
 }
+
 // resolveUtilityPath resolves a helper tool path once. Distributions ship
 // tools such as "ip" as a symlink into the merged /usr tree, so the link is
 // resolved and the resolved file is the one that is trusted and executed.
@@ -77,6 +146,7 @@ func resolveUtilityPath(p string) string {
 	}
 	return p
 }
+
 // trustedUtilityPath resolves a helper tool before it runs. The ownership and
 // permission walk in trustedExecutable still rejects any target an
 // unprivileged user could replace, so only root-owned helpers in root-owned
@@ -138,7 +208,11 @@ func requireOwnedUnit(a platform.App, m manager) error {
 	if e != nil {
 		return e
 	}
-	if string(b) != unitText(a, m) {
+	text, e := unitText(a, m)
+	if e != nil {
+		return e
+	}
+	if string(b) != text {
 		return platform.Usage("systemd-unit-unowned")
 	}
 	entries, e := os.ReadDir(unitPath(a) + ".d")
@@ -392,14 +466,22 @@ func serviceCommand(ctx context.Context, a platform.App, r platform.Request) (pl
 		}
 		oldManager := x.Manager
 		x.Manager.Core.Backend = "systemd"
-		text := []byte(unitText(a, x.Manager))
+		unit, e := unitText(a, x.Manager)
+		if e != nil {
+			return doc, e
+		}
+		text := []byte(unit)
 		var old []byte
 		if _, e = os.Lstat(path); e == nil {
 			old, e = platform.ReadPrivate(path)
 			if e != nil {
 				return doc, e
 			}
-			if string(old) != unitText(a, oldManager) {
+			previous, e := unitText(a, oldManager)
+			if e != nil {
+				return doc, e
+			}
+			if string(old) != previous {
 				return doc, platform.Usage("systemd-unit-unowned")
 			}
 		} else if !os.IsNotExist(e) {

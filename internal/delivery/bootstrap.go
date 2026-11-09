@@ -504,9 +504,6 @@ func prepareBootstrap(a platform.App, source, bin string, m Manifest) (bootstrap
 		return j, e
 	}
 	j.Receipt = Receipt{Format: 1, Project: Project, BinPath: bin, LauncherSHA256: platform.Hash(launcher(j.Root)), InstallationID: j.Token}
-	if e = platform.WriteJSON(filepath.Join(j.Stage, "receipt.json"), j.Receipt); e != nil {
-		return j, e
-	}
 	if e = platform.AtomicWrite(filepath.Join(j.Stage, "current"), []byte(j.Generation+"\n"), 0600); e != nil {
 		return j, e
 	}
@@ -529,6 +526,16 @@ func prepareBootstrap(a platform.App, source, bin string, m Manifest) (bootstrap
 		return j, e
 	}
 	if j.Launcher, e = bootstrapIdentity(filepath.Join(j.LauncherDir, "launcher")); e != nil {
+		return j, e
+	}
+	// The launcher is staged before the receipt so the receipt can bind its
+	// object: the published launcher is a hard link of this file, so the
+	// recorded device and inode identify exactly the object a later
+	// uninstall may delete. A replacement carrying identical bytes is a
+	// different object and is never adopted.
+	j.Receipt.LauncherDevice = j.Launcher.Device
+	j.Receipt.LauncherInode = j.Launcher.Inode
+	if e = platform.WriteJSON(filepath.Join(j.Stage, "receipt.json"), j.Receipt); e != nil {
 		return j, e
 	}
 	if j.Entries, e = captureBootstrapTree(j.Stage); e != nil {

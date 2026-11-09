@@ -111,7 +111,11 @@ func coreCommand(ctx context.Context, a platform.App, r platform.Request) (platf
 		if e = requireOwnedUnit(a, x.Manager); e != nil {
 			return doc, e
 		}
-		files[unitPath(a)] = []byte(unitText(a, m))
+		unit, e := unitText(a, m)
+		if e != nil {
+			return doc, e
+		}
+		files[unitPath(a)] = []byte(unit)
 	}
 	if e = applyCompound(ctx, a, "core-adopt", x.Manager, m, files, id, func(active context.Context) error {
 		if id != nil {
@@ -337,7 +341,11 @@ func reset(ctx context.Context, a platform.App, r platform.Request) (platform.En
 				return doc, e
 			}
 			files[a.Scope.ManagerPath()] = b
-			files[unitPath(a)] = []byte(unitText(a, m))
+			unit, e := unitText(a, m)
+			if e != nil {
+				return doc, e
+			}
+			files[unitPath(a)] = []byte(unit)
 		}
 	}
 	if e = applyCompound(ctx, a, "reset", oldManager, m, files, wasRunning, func(ctx context.Context) error {

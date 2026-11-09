@@ -25,13 +25,22 @@
   located inside program generations, and equally refuses a manager that points
   the active configuration or profile credentials into the program tree
   (`uninstall-config-inside-program-root`) instead of deleting them with the
-  generation.
+  generation. The installation receipt now binds the launcher object itself by
+  device and inode, so a launcher replaced by a file carrying identical bytes is
+  a foreign object: the uninstall refuses it (`uninstall-launcher-drift`) and the
+  installation status no longer reports it as valid.
 
 - Configuration file transactions preflight the type of every journalled
   destination before the first undo. A path replaced by a directory, FIFO, socket
   or device makes the rollback fail with `rollback-failed` and keeps the journal,
   instead of partially undoing earlier records and then removing a foreign object.
   A failed write aborts before the rename, so a truncated file is never published.
+  The journal also binds every destination by device and inode, and the recorded
+  content decides which object belongs at the path — the published one when the
+  replacement already ran, the previous one when it never did. A foreign
+  replacement that carries identical bytes is therefore refused
+  (`transaction-current-drifted`) instead of being overwritten or deleted as if
+  it were the transaction's own file.
 
 - Health checks report an evidence level (`confirmed`, `inferred`, `unavailable`)
   and a readable detail, skip listener and controller probes while the runtime is
@@ -62,6 +71,12 @@
   distributions that ship them as symlinks into a merged `/usr` no longer fail
   every device and route check with `symlink-refused` and `tun enable` can
   succeed. The reviewed core itself still has to be a regular file.
+  A system core whose path contains a space is quoted per path in the unit's path
+  lists (`TemporaryFileSystem=`, `BindPaths=`, `BindReadOnlyPaths=`,
+  `ReadWritePaths=`), because systemd splits those lists on whitespace and a
+  quoted pair would hide the `:` that separates source and destination. A path
+  that systemd cannot express at all is refused instead of producing a unit that
+  cannot start.
 
 - Independent native Go project `mihomoctl-go`, repository `liuzq1103/mihomoctl`, command `mihomoctl`.
 - Bounded official-host release downloads with explicit caller-reviewed SHA-256 for acquisition and latest updates. Remote unsigned checksums are consistency evidence, not independent trust.

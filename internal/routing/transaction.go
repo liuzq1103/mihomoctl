@@ -53,6 +53,14 @@ type txRecord struct {
 	CreatedDirs     []string `json:"created_dirs,omitempty"`
 	PublishedSHA256 string   `json:"published_sha256,omitempty"`
 	SymlinkTarget   string   `json:"symlink_target,omitempty"`
+	// PrevObject is the identity of the object that stood at Path before
+	// this transaction touched it, PublishedObject the identity of the
+	// object this transaction published there. A content hash cannot tell
+	// the published object from a foreign replacement carrying identical
+	// bytes, so the recovery re-checks these identities before it undoes
+	// anything.
+	PrevObject      string `json:"prev_object,omitempty"`
+	PublishedObject string `json:"published_object,omitempty"`
 }
 
 // fileTransaction is one durable multi-file mutation with rollback.
@@ -228,6 +236,9 @@ func (t *fileTransaction) captureMetadata(record *txRecord, path string) error {
 	default:
 		return control("refuse-unusual-file", exitUnverify)
 	}
+	if object, err := txObjectIdentity(path); err == nil {
+		record.PrevObject = object
+	}
 	return nil
 }
 
@@ -312,11 +323,21 @@ func (t *fileTransaction) publish(destination string, data []byte, mode os.FileM
 		mode = os.FileMode(0600)
 	}
 	record.PublishedSHA256 = hashSHA256(data)
-	t.journal = append(t.journal, record)
-	if err := t.persist("pending"); err != nil {
+	// The published object is prepared first so its identity can be
+	// journaled before the rename: the journal entry is durable BEFORE
+	// the replacement runs, and it names the object that the replacement
+	// will publish.
+	temporary, object, err := txPrepareReplace(destination, data, mode)
+	if err != nil {
 		return err
 	}
-	if err := txAtomicReplace(destination, data, mode); err != nil {
+	record.PublishedObject = object
+	t.journal = append(t.journal, record)
+	if err := t.persist("pending"); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	if err := txCommitReplace(destination, temporary); err != nil {
 		return err
 	}
 	if existed {
@@ -540,18 +561,30 @@ var txTempWrite = func(temporary *os.File, mode os.FileMode, data []byte) error 
 // truncated or empty file and reporting success would commit a configuration
 // that was never fully written.
 func txAtomicReplace(destination string, data []byte, mode os.FileMode) error {
+	temporary, _, err := txPrepareReplace(destination, data, mode)
+	if err != nil {
+		return err
+	}
+	return txCommitReplace(destination, temporary)
+}
+
+// txPrepareReplace writes the payload into a temporary file beside the
+// destination. The temporary file is the object that will be published, so
+// its identity is returned as well: the journal records it before the
+// rename, and the recovery re-checks it against the object that is found at
+// the path afterwards.
+func txPrepareReplace(destination string, data []byte, mode os.FileMode) (string, string, error) {
 	if err := platform.CheckPath(destination); err != nil {
-		return controllerFileError(err)
+		return "", "", controllerFileError(err)
 	}
 	if info, err := os.Lstat(destination); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return control("refuse-symlink-destination", exitUnverify)
+		return "", "", control("refuse-symlink-destination", exitUnverify)
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(destination), "."+filepath.Base(destination)+"-")
 	if err != nil {
-		return controllerFileError(err)
+		return "", "", controllerFileError(err)
 	}
 	name := temporary.Name()
-	defer os.Remove(name)
 	err = txTempWrite(temporary, mode, data)
 	if err == nil {
 		err = temporary.Sync()
@@ -561,9 +594,22 @@ func txAtomicReplace(destination string, data []byte, mode os.FileMode) error {
 		err = closeErr
 	}
 	if err != nil {
-		return controllerFileError(err)
+		_ = os.Remove(name)
+		return "", "", controllerFileError(err)
 	}
-	if err := os.Rename(name, destination); err != nil {
+	object, err := txObjectIdentity(name)
+	if err != nil {
+		_ = os.Remove(name)
+		return "", "", controllerFileError(err)
+	}
+	return name, object, nil
+}
+
+// txCommitReplace publishes the prepared temporary file over the destination
+// and makes the rename durable.
+func txCommitReplace(destination, temporary string) error {
+	defer os.Remove(temporary)
+	if err := os.Rename(temporary, destination); err != nil {
 		return controllerFileError(err)
 	}
 	if err := fsyncDir(filepath.Dir(destination)); err != nil {
@@ -742,7 +788,7 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 			for _, record := range tx.journal {
 				latest[record.Path] = record
 			}
-			for path, record := range latest {
+			for path := range latest {
 				info, err := os.Lstat(path)
 				if err != nil || !info.Mode().IsRegular() {
 					continue
@@ -753,6 +799,7 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 				}
 				digest := hashSHA256(current)
 				expected := map[string]bool{}
+				previousDigest := ""
 				for _, step := range tx.journal {
 					if step.Path == path {
 						if step.PublishedSHA256 != "" {
@@ -760,7 +807,9 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 						}
 						if step.Backup != "" {
 							if saved, err := os.ReadFile(step.Backup); err == nil {
-								expected[hashSHA256(saved)] = true
+								previous := hashSHA256(saved)
+								expected[previous] = true
+								previousDigest = previous
 							}
 						}
 					}
@@ -768,7 +817,36 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 				if !expected[digest] {
 					return control("transaction-current-drifted", exitUnverify)
 				}
-				_ = record
+				// Identical bytes are not proof that the file at the path
+				// is still an object this transaction owns. The recorded
+				// content says which object belongs there: the published
+				// one when the replacement already ran, the previous one
+				// when it never did. The recorded identity must match, so
+				// a replacement carrying the same bytes is refused
+				// instead of being undone as if it were our own file.
+				rec := latest[path]
+				if rec.PrevObject == "" && rec.PublishedObject == "" {
+					// A journal written before identities were recorded
+					// keeps the content-only preflight.
+					continue
+				}
+				candidates := map[string]bool{}
+				if rec.PublishedSHA256 != "" && rec.PublishedSHA256 != previousDigest {
+					if rec.PublishedSHA256 == digest {
+						candidates[rec.PublishedObject] = true
+					} else {
+						candidates[rec.PrevObject] = true
+					}
+				} else {
+					// The published content equals the previous content, so
+					// the two objects cannot be told apart by the bytes.
+					candidates[rec.PrevObject] = true
+					candidates[rec.PublishedObject] = true
+				}
+				object, oerr := txObjectIdentity(path)
+				if oerr != nil || !candidates[object] {
+					return control("transaction-current-drifted", exitUnverify)
+				}
 			}
 			if err := tx.rollback(true); err != nil {
 				return err

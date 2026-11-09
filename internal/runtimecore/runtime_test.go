@@ -255,7 +255,10 @@ func TestExportsAreArtifactsOnly(t *testing.T) {
 	if _, e := renderExport(a, "x", binding{Adapter: "unknown"}, vars); e == nil {
 		t.Fatal("unknown adapter accepted")
 	}
-	text := unitText(a, manager{Core: coreSettings{Binary: "/trusted/mihomo", Config: "/private/core.yaml"}})
+	text, e := unitText(a, manager{Core: coreSettings{Binary: "/trusted/mihomo", Config: "/private/core.yaml"}})
+	if e != nil {
+		t.Fatal(e)
+	}
 	if !strings.Contains(text, unitMarker) || strings.Contains(text, "unit-secret") {
 		t.Fatal(text)
 	}
@@ -292,7 +295,11 @@ func TestSystemdOwnershipAndEnvironmentEncoding(t *testing.T) {
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		t.Fatal(e)
 	}
-	if e := platform.AtomicWrite(path, []byte(unitText(a, m)), 0600); e != nil {
+	unit, e := unitText(a, m)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e := platform.AtomicWrite(path, []byte(unit), 0600); e != nil {
 		t.Fatal(e)
 	}
 	props := map[string]string{"FragmentPath": path, "User": "", "ExecStart": "{ path=" + m.Core.Binary + " ; argv[]=" + strings.Join([]string{m.Core.Binary, "-d", serviceHome(a), "-f", serviceConfig(a, m)}, " ") + " ; ignore_errors=no ; }"}
@@ -311,12 +318,18 @@ func TestSystemdOwnershipAndEnvironmentEncoding(t *testing.T) {
 		t.Fatal("changed URL encoding")
 	}
 	a.Scope.System = true
-	unit := unitText(a, m)
+	unit, e = unitText(a, m)
+	if e != nil {
+		t.Fatal(e)
+	}
 	if !strings.Contains(unit, "User=mihomoctl-go") || !strings.Contains(unit, "BindPaths=") || !strings.Contains(unit, "BindReadOnlyPaths=") || !strings.Contains(unit, "RuntimeDirectoryMode=0700") {
 		t.Fatal(unit)
 	}
 	m.Core.Binary = filepath.Join(a.Scope.DataRoot, "cores", "v1.19.33", "mihomo")
-	unit = unitText(a, m)
+	unit, e = unitText(a, m)
+	if e != nil {
+		t.Fatal(e)
+	}
 	if !strings.Contains(unit, "TemporaryFileSystem=") || !strings.Contains(unit, "service-binary") {
 		t.Fatal("private delivery core missing read-only namespace exposure")
 	}

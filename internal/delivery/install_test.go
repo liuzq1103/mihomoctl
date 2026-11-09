@@ -36,7 +36,10 @@ func installed(t *testing.T) (platform.App, string) {
 	if e = platform.AtomicWrite(bin, launcher(root), 0700); e != nil {
 		t.Fatal(e)
 	}
-	if e = platform.WriteJSON(filepath.Join(root, "receipt.json"), Receipt{Format: 1, Project: Project, BinPath: bin, LauncherSHA256: platform.Hash(launcher(root))}); e != nil {
+	// The receipt binds the launcher object, not only its bytes: a
+	// replacement file carrying identical bytes is a different object.
+	device, inode, _ := launcherIdentity(bin)
+	if e = platform.WriteJSON(filepath.Join(root, "receipt.json"), Receipt{Format: 1, Project: Project, BinPath: bin, LauncherSHA256: platform.Hash(launcher(root)), LauncherDevice: device, LauncherInode: inode}); e != nil {
 		t.Fatal(e)
 	}
 	if e = platform.AtomicWrite(filepath.Join(root, "current"), []byte(id+"\n"), 0600); e != nil {

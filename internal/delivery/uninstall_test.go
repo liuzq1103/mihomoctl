@@ -76,6 +76,39 @@ func TestUninstallCrashRecoveryAllBoundaries(t *testing.T) {
 	}
 }
 
+// TestUninstallRefusesForeignLauncherWithIdenticalBytes pins the ownership
+// invariant of the managed installation: the receipt binds the launcher
+// object, so a replacement file carrying identical bytes is a foreign object.
+// The uninstall refuses it instead of adopting and deleting it.
+func TestUninstallRefusesForeignLauncherWithIdenticalBytes(t *testing.T) {
+	a, _ := installed(t)
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	foreign := rec.BinPath + ".foreign"
+	if e = platform.AtomicWrite(foreign, launcher(installRoot(a)), 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Rename(foreign, rec.BinPath); e != nil {
+		t.Fatal(e)
+	}
+	_, e = Uninstall(context.Background(), a, false)
+	if e == nil {
+		t.Fatal("a foreign launcher was adopted and removed")
+	}
+	refusal, ok := e.(*platform.Error)
+	if !ok || refusal.Code != "installation-launcher-drift" {
+		t.Fatalf("refusal = %v", e)
+	}
+	if _, e = os.Lstat(rec.BinPath); e != nil {
+		t.Fatal("the foreign launcher was deleted", e)
+	}
+	if _, e = os.Lstat(installRoot(a)); e != nil {
+		t.Fatal("the program root was removed after the refusal", e)
+	}
+}
+
 func TestBootstrapRecoversCompletedRemovalBeforeReinstall(t *testing.T) {
 	a, _ := installed(t)
 	j := interruptUninstall(t, a, "root-removed")
