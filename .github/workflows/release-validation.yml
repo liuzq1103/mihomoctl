@@ -40,10 +40,13 @@ jobs:
       matrix:
         os: ['22.04', '24.04']
         arch: [amd64, arm64]
-    runs-on: ubuntu-${{ matrix.os }}
-    # The arm64 gate executes the suite twice under QEMU emulation (root
-    # ownership tests, then the complementary non-root user-scope pass).
-    timeout-minutes: 120
+    # The arm64 gate runs on GitHub's native arm runners. An earlier revision
+    # ran it under QEMU emulation, but qemu-user does not give a multi-threaded
+    # guest a stable /proc start time, so the kernel ownership proof at the
+    # heart of this product fails closed under emulation. Real arm64 hardware
+    # runs the proof for real; no test of the proof is skipped.
+    runs-on: ubuntu-${{ matrix.os }}${{ matrix.arch == 'arm64' && '-arm' || '' }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,28 +54,5 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
-      - name: Native amd64 gate
-        if: matrix.arch == 'amd64'
-        run: sh scripts/ci-linux.sh amd64
-      - uses: docker/setup-qemu-action@v3
-        if: matrix.arch == 'arm64'
-        with:
-          platforms: arm64
-      - name: Ubuntu arm64 gate (QEMU regular tests and real core; race runs on amd64)
-        if: matrix.arch == 'arm64'
-        env:
-          UBUNTU: ${{ matrix.os }}
-        run: |
-          docker pull --platform linux/arm64 golang:1.23
-          toolchain=$(docker create --platform linux/arm64 golang:1.23)
-          mkdir -p "$RUNNER_TEMP/toolchain"
-          docker cp "$toolchain:/usr/local/go" "$RUNNER_TEMP/toolchain/go"
-          docker rm "$toolchain"
-          docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work \
-            -v "$RUNNER_TEMP/toolchain/go:/usr/local/go:ro" \
-            -e PATH=/usr/local/go/bin:/usr/sbin:/usr/bin:/sbin:/bin "ubuntu:$UBUNTU" sh -ec '
-              apt-get update
-              apt-get install -y ca-certificates gcc libc6-dev git nodejs
-              git config --global --add safe.directory /work
-              sh scripts/ci-linux.sh arm64
-            '
+      - name: Linux gate (${{ matrix.arch }})
+        run: sh scripts/ci-linux.sh ${{ matrix.arch }}

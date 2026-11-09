@@ -129,9 +129,10 @@ staged tree and the journal are rolled back and the installation reports
 be repeated on a supported filesystem.
 
 CI runs race/vet/full-package tests and product CLI/bundle smoke on Ubuntu 22.04
-and 24.04, amd64 natively and arm64 via explicit QEMU Ubuntu containers. Race tests
-run on amd64; arm64 QEMU runs normal tests and actual CLI/core execution. Its
-ThreadSanitizer VMA layout is unsupported, so no arm64 QEMU race PASS is claimed. The draft
+and 24.04, both architectures on native hardware (the arm64 gate uses GitHub's
+native arm runners). Race tests run on both architectures. An earlier QEMU
+arm64 gate was removed: qemu-user gives a multi-threaded guest no stable /proc
+start time, so the kernel ownership proof fails closed under emulation. The draft
 matrix also includes privileged real-systemd amd64 jobs on both Ubuntu versions;
 they fail if PID 1 is not systemd, or real core init/service/start/health cannot
 be verified. These are acceptance jobs, not local evidence of a systemd pass. The draft

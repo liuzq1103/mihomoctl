@@ -74,7 +74,7 @@ go vet ./...
 CGO_ENABLED=1 go test -race ./...
 ```
 
-真实核心测试使用 `MIHOMOCTL_GO_TEST_CORE=/trusted/path/to/mihomo`。发布验收还需要 Ubuntu 22.04/24.04、amd64/arm64 实际执行、真实核心、隔离的 systemd/TUN/SSH 与两个非 root UID 检查，以及终端交互证据。arm64 QEMU 下 ThreadSanitizer 的 VMA 限制不算通过；race 在 amd64 执行，arm64 常规测试和真实核心仍须实际运行。
+真实核心测试使用 `MIHOMOCTL_GO_TEST_CORE=/trusted/path/to/mihomo`。发布验收还需要 Ubuntu 22.04/24.04、amd64/arm64 实际执行、真实核心、隔离的 systemd/TUN/SSH 与两个非 root UID 检查，以及终端交互证据。arm64 门在原生 arm 硬件上执行（qemu-user 不给多线程 guest 稳定的 /proc 启动时间，内核归属证明在模拟下必然拒绝，模拟不算通过）；amd64 与 arm64 都执行 race。
 
 当前不宣称全部平台、特权测试或模型审阅已经通过。同一候选 SHA 必须有 GPT、GLM、MiniMax 三个模型家族的真实完成审阅和签入的证据，再由自动流程构建草稿；不增加人工审批环境。公开发布仍需独立审阅实际资产，候选版本不是已发布版本。跳过、配额不足或失败的模型调用不能算批准。逐项证据和缺口见[验收索引](docs/feature-parity.md)。
 

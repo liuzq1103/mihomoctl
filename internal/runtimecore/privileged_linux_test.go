@@ -262,6 +262,11 @@ type privilegedFixture struct {
 	ClientKey      string
 	CreatedSSHDRun bool
 	Claimed        bool
+	// UnitStarted records that the receipt-owned unit has been started at
+	// least once. systemd refuses `reset-failed` for a unit it has never
+	// loaded ("Unit ... not loaded", confirmed on systemd 245 and 255), and a
+	// freshly installed unit is not loaded until its first start.
+	UnitStarted bool
 }
 
 func privilegedStep(t *testing.T, name string, fn func(*testing.T)) {
@@ -595,8 +600,10 @@ func (f *privilegedFixture) rootRun(t *testing.T, command []string, options map[
 	// The real unit deliberately limits starts to five per minute. CI exercises
 	// more explicit transitions than that; reset only this receipt-owned unit's
 	// counter so the suite tests activation/recovery rather than rate limiting.
+	// Before the unit's first start there is no counter to reset, and systemd
+	// refuses reset-failed for a unit it has never loaded.
 	name := strings.Join(command, "-")
-	if member(name, "start", "restart", "service-start", "service-restart", "tun-enable", "tun-disable") {
+	if f.UnitStarted && member(name, "start", "restart", "service-start", "service-restart", "tun-enable", "tun-disable") {
 		if _, exists := os.Lstat(unitPath(f.App)); exists == nil {
 			m, e := loadManager(f.App)
 			if e != nil {
@@ -620,6 +627,9 @@ func (f *privilegedFixture) rootRun(t *testing.T, command []string, options map[
 	}
 	if e != nil || doc.Overall != overall {
 		t.Fatalf("system %s: overall=%s errors=%v err=%v", strings.Join(command, " "), doc.Overall, doc.Errors, e)
+	}
+	if overall == "PASS" && member(name, "start", "restart", "service-start", "service-restart", "tun-enable", "tun-disable") {
+		f.UnitStarted = true
 	}
 	return doc
 }

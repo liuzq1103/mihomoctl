@@ -1,22 +1,14 @@
 #!/bin/sh
-# Execute on the requested architecture, directly or inside an explicit QEMU VM/container.
+# Execute on the requested architecture, natively on real hardware.
 set -eu
 expected=${1:?expected Go architecture}
 [ "$(go env GOARCH)" = "$expected" ]
 case "$expected:$(uname -m)" in amd64:x86_64|arm64:aarch64) ;; *) echo 'architecture execution mismatch' >&2; exit 1;; esac
-race_flag=
-if [ "$expected" = amd64 ]; then
-    race_flag=-race
-else
-    echo 'arm64 QEMU: ThreadSanitizer VMA layout is unsupported; race testing is NOT executed here. amd64 CI supplies race coverage.' >&2
-    # The emulated process group carries no stable kernel start time, so the
-    # /proc ownership proof cannot bind to a process identity under emulation.
-    # The tests that are about that proof are skipped here and are covered by
-    # the native amd64 job; the gate states the gap instead of hiding it.
-    MIHOMOCTL_GO_TEST_EMULATED=1
-    export MIHOMOCTL_GO_TEST_EMULATED
-    echo 'arm64 QEMU: the emulated kernel exposes no stable process identity; the kernel ownership proof is NOT exercised here. amd64 CI supplies that coverage.' >&2
-fi
+race_flag=-race
+# Both architectures run natively on real hardware (the arm64 gate uses
+# GitHub's native arm runners). An earlier revision ran arm64 under QEMU,
+# where qemu-user gives a multi-threaded guest no stable /proc start time and
+# the kernel ownership proof correctly fails closed; that gap is gone.
 go vet ./...
 go build -o /tmp/mihomoctl-go-ci .
 go build -o /tmp/mihomoctl-go-delivery ./scripts/deliveryctl

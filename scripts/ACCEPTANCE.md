@@ -52,9 +52,11 @@ Local checks completed:
 
 CI changes and remaining external acceptance:
 
-- Ubuntu 22.04/24.04 arm64 QEMU jobs run normal tests and real CLI/core smoke.
-  ThreadSanitizer under QEMU reported unsupported VMA layout (47 versus 48).
-  Therefore race tests run on amd64 only; no arm64 QEMU race PASS is claimed.
+- Ubuntu 22.04/24.04 arm64 jobs run on GitHub's native arm runners, covering
+  normal tests, real CLI/core smoke and race. An earlier QEMU-based gate was
+  removed: qemu-user does not give a multi-threaded guest a stable /proc start
+  time, so the kernel ownership proof fails closed under emulation and
+  emulation cannot gate the release.
 - Privileged core inputs stage in a fresh root-owned /root directory; no arbitrary
   system directories have their trust permissions weakened.
 - Both Ubuntu privileged jobs compile and explicitly opt in to the actual
