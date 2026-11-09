@@ -51,6 +51,18 @@
   dirty in `BUILD.json` and `build-receipt.json`. Review evidence is checked in
   with the exact reviewed candidate commit.
 
+- The system-scope service stages the reviewed core into its private binary
+  directory once and keeps that copy's inode while the copy still carries
+  exactly the reviewed bytes. Re-staging an identical core no longer replaces
+  the executable of a running core, so the kernel no longer reports
+  `/proc/<pid>/exe` with a ` (deleted)` suffix and the fail-closed identity
+  proof no longer rejects the process it has just verified
+  (`systemd-identity-unverified`, `systemd-transition-unverified`). Helper
+  tools such as `ip` and `journalctl` are resolved once before they run, so
+  distributions that ship them as symlinks into a merged `/usr` no longer fail
+  every device and route check with `symlink-refused` and `tun enable` can
+  succeed. The reviewed core itself still has to be a regular file.
+
 - Independent native Go project `mihomoctl-go`, repository `liuzq1103/mihomoctl`, command `mihomoctl`.
 - Bounded official-host release downloads with explicit caller-reviewed SHA-256 for acquisition and latest updates. Remote unsigned checksums are consistency evidence, not independent trust.
 - Managed installation receipt, exact manifest inventories, immutable generations, atomic activation record, failure rollback and recovery journal. Updates preserve runtime configuration and active core paths.

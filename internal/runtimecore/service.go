@@ -68,12 +68,33 @@ func serviceHome(a platform.App) string {
 	}
 	return a.Scope.CoreHome()
 }
-func utility(ctx context.Context, name string, args ...string) ([]byte, error) {
+// resolveUtilityPath resolves a helper tool path once. Distributions ship
+// tools such as "ip" as a symlink into the merged /usr tree, so the link is
+// resolved and the resolved file is the one that is trusted and executed.
+func resolveUtilityPath(p string) string {
+	if resolved, e := filepath.EvalSymlinks(p); e == nil {
+		return resolved
+	}
+	return p
+}
+// trustedUtilityPath resolves a helper tool before it runs. The ownership and
+// permission walk in trustedExecutable still rejects any target an
+// unprivileged user could replace, so only root-owned helpers in root-owned
+// directories remain executable.
+func trustedUtilityPath(name string) (string, error) {
 	p, e := exec.LookPath(name)
 	if e != nil {
-		return nil, platform.Usage(name + "-unavailable")
+		return "", platform.Usage(name + "-unavailable")
 	}
+	p = resolveUtilityPath(p)
 	if e = trustedExecutable(p, os.Geteuid() == 0); e != nil {
+		return "", e
+	}
+	return p, nil
+}
+func utility(ctx context.Context, name string, args ...string) ([]byte, error) {
+	p, e := trustedUtilityPath(name)
+	if e != nil {
 		return nil, e
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)

@@ -158,6 +158,17 @@ func prepareSystemBinary(ctx context.Context, a platform.App, binary string) err
 	} else if !os.IsNotExist(e) {
 		return e
 	}
+	source, _, e := hashResource(ctx, a, binary, "executable")
+	if e != nil {
+		return e
+	}
+	// Keep the staged inode when it already carries exactly the reviewed core.
+	// Replacing it would unlink the executable of a running service: the
+	// kernel then reports /proc/<pid>/exe with a " (deleted)" suffix and the
+	// fail-closed identity proof rejects the process it just verified.
+	if staged, _, e := hashResource(ctx, a, target, "executable"); e == nil && staged == source {
+		return nil
+	}
 	hash, _, e := transferResource(ctx, a, binary, target, executableLimit)
 	if e != nil {
 		return e

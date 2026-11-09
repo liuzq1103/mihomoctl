@@ -288,6 +288,7 @@ func journalLogs(ctx context.Context, args []string, r platform.Request, redacto
 	if e != nil {
 		return nil, platform.Fail("logs-unavailable")
 	}
+	path = resolveUtilityPath(path)
 	if e = trustedExecutable(path, os.Geteuid() == 0); e != nil {
 		return nil, e
 	}
