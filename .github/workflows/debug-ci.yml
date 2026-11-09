@@ -75,6 +75,22 @@ jobs:
               echo "== lifecycle test under emulation =="
               MIHOMOCTL_GO_TEST_EMULATED=1 MIHOMOCTL_GO_TEST_CORE=/tmp/mihomo go test ./internal/runtimecore -run "TestNativeLifecycleAndAuthentication" -count=1 -v 2>&1 | tail -40
             '
+  arm-native:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+      - name: Native arm64 environment facts
+        run: |
+          uname -a
+          cat /proc/1/comm
+          id
+          go env GOARCH GOARM64
+      - name: Full arm64 gate natively
+        run: sh scripts/ci-linux.sh arm64
   systemd-semantics:
     strategy:
       fail-fast: false
