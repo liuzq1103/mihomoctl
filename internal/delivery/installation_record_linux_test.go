@@ -4,6 +4,7 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -129,6 +130,85 @@ func TestInstallationRepairsAnOrphanedLauncher(t *testing.T) {
 	}
 	if installed["installed"] != true {
 		t.Fatalf("status = %v", installed)
+	}
+}
+
+// An orphaned launcher recorded at one directory does not make a foreign
+// command at a DIFFERENT requested directory ours. The orphan repair only
+// covers the recorded destination: accepting the foreign one would remove the
+// recorded launcher, publish the program root and only then fail to link the
+// launcher over the foreign file, wedging the scope behind a journal no
+// recovery can finish. The foreign destination is refused before anything is
+// repaired.
+func TestInstallRefusesAForeignDestinationWhileAnOrphanLivesElsewhere(t *testing.T) {
+	a, _ := installed(t)
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = writeInstallationRecord(a, rec); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.RemoveAll(installRoot(a)); e != nil {
+		t.Fatal(e)
+	}
+	other := filepath.Join(filepath.Dir(a.Scope.DataRoot), "other-bin")
+	if e = os.MkdirAll(other, 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e = platform.AtomicWrite(filepath.Join(other, "mihomoctl"), []byte("#!/bin/sh\n# a foreign command\n"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	source := fixture(t, "0.2.0", "bootstrap-binary")
+	_, e = bootstrap(context.Background(), a, source, other, false, bootstrapHooks{})
+	var pe *platform.Error
+	if !errors.As(e, &pe) || pe.Code != "installation-command-exists" {
+		t.Fatalf("error = %v", e)
+	}
+	// The recorded launcher survives: nothing was repaired for a refusal.
+	if _, e = os.Lstat(rec.BinPath); e != nil {
+		t.Fatal("the refusal removed the recorded launcher", e)
+	}
+	if _, e = os.Lstat(installationRecordPath(a)); e != nil {
+		t.Fatal("the refusal dropped the record", e)
+	}
+	if _, e = os.Lstat(installRoot(a)); !os.IsNotExist(e) {
+		t.Fatal("the refusal published a program root", e)
+	}
+	if _, e = os.Lstat(bootstrapJournalPath(a)); !os.IsNotExist(e) {
+		t.Fatal("the refusal left a bootstrap journal", e)
+	}
+}
+
+// An installation MAY move to a different directory while its orphaned
+// launcher is repaired: the orphan repair is not tied to the requested
+// destination, only its acceptance of an occupied destination is.
+func TestInstallRepairsAnOrphanWhileMovingToAFreeDirectory(t *testing.T) {
+	a, _ := installed(t)
+	rec, e := readReceipt(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = writeInstallationRecord(a, rec); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.RemoveAll(installRoot(a)); e != nil {
+		t.Fatal(e)
+	}
+	other := filepath.Join(filepath.Dir(a.Scope.DataRoot), "other-bin")
+	source := fixture(t, "0.2.0", "bootstrap-binary")
+	data, e := bootstrap(context.Background(), a, source, other, false, bootstrapHooks{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if data["repaired_orphan_launcher"] != rec.BinPath {
+		t.Fatalf("data = %v", data)
+	}
+	if _, e = os.Lstat(rec.BinPath); !os.IsNotExist(e) {
+		t.Fatal("the orphaned launcher was not removed", e)
+	}
+	if _, e = os.Lstat(filepath.Join(other, "mihomoctl")); e != nil {
+		t.Fatal("the new launcher was not published", e)
 	}
 }
 

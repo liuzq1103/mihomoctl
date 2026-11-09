@@ -25,7 +25,13 @@
   `installation status` reports `orphaned` instead of `not-installed`, and a
   later install or uninstall removes the leftover launcher by identity —
   never a foreign replacement carrying identical bytes — instead of refusing
-  every later installation with `installation-command-exists`. A record from
+  every later installation with `installation-command-exists`. When the
+  installation moves to a different directory, the repair covers only the
+  recorded launcher: a requested destination that already holds a foreign
+  command is refused (`installation-command-exists`) before anything is
+  removed or published — removing the recorded launcher and then failing to
+  link over the foreign file would leave a half-installed root behind a
+  journal no recovery can finish. A record from
   before the receipt bound the launcher object is not unconditional deletion
   authority either: it keeps the content guarantee it was written with, so a
   launcher that still hashes to the recorded digest is ours and any other

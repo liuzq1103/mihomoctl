@@ -619,9 +619,16 @@ func bootstrap(ctx context.Context, a platform.App, source, binDir string, dry b
 			// program root was lost when the record outside that root names
 			// its object: that launcher can only fail, and the mutating path
 			// removes it by identity instead of refusing the installation.
-			if _, orphaned, e := installationOrphan(a); e != nil {
+			// The orphan has to be the object at THIS destination: an orphan
+			// recorded elsewhere does not make an unrelated file at the
+			// requested path ours. Accepting it would remove the recorded
+			// launcher, publish the program root and only then fail to link
+			// the launcher over the foreign file, leaving a journal that no
+			// recovery can finish. A different destination is refused up
+			// front, before anything is repaired or published.
+			if rec, orphaned, e := installationOrphan(a); e != nil {
 				return false, e
-			} else if orphaned {
+			} else if orphaned && rec.BinPath == bin {
 				return false, nil
 			}
 			return false, fail("installation-command-exists")
