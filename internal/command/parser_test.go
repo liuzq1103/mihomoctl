@@ -114,6 +114,59 @@ func TestBaselineUsageErrorContract(t *testing.T) {
 	}
 }
 
+// TestScopeFlagsMatchTheBaselineExtraction pins the scope-flag contract to
+// the reference implementation, which splits the child argv on "--" FIRST and
+// then refuses a manager argv that carries both scope flags:
+//
+//	manager_args, child_argv = argv[:split], argv[split + 1:]
+//	...
+//	if "--user" in argv and "--system" in argv: raise scope-flags-exclusive
+//
+// So a child argument that merely reads "--user" is never a scope flag, while
+// a manager argument does not have to be a leading flag to conflict. The
+// split happens before the check, so the child segment is excluded from it.
+func TestScopeFlagsMatchTheBaselineExtraction(t *testing.T) {
+	for _, tt := range []struct {
+		args    []string
+		refused bool
+		why     string
+	}{
+		{[]string{"exec", "--", "mytool", "--user", "--system"}, false,
+			"child argv after -- is not a manager argument"},
+		{[]string{"direct", "--", "mytool", "--user"}, false,
+			"a single child scope flag is not a manager argument"},
+		{[]string{"status", "--user", "--system"}, true,
+			"the manager argv carries both scope flags"},
+		{[]string{"--user", "--system", "status"}, true,
+			"the manager argv carries both scope flags"},
+		{[]string{"config", "set", "--name", "--user", "--system"}, true,
+			"an option value does not exempt a manager argument"},
+	} {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			p, err := Parse(tt.args, nil, nil, nil)
+			if tt.refused {
+				if err == nil {
+					t.Fatal("accepted both scope flags")
+				}
+				env := platform.Failure(p.Request.TopLevel(), "user", err)
+				if env.Errors[0].Code != "scope-flags-exclusive" {
+					t.Fatalf("code = %q", env.Errors[0].Code)
+				}
+				if p.System {
+					t.Fatal("scope conflict selected system scope")
+				}
+				return
+			}
+			if err != nil {
+				env := platform.Failure(p.Request.TopLevel(), "user", err)
+				if env.Errors[0].Code == "scope-flags-exclusive" {
+					t.Fatalf("refused a valid invocation: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestInvalidPinnedCoreVersionIsAParserRefusal(t *testing.T) {
 	for _, verb := range []string{"install", "update"} {
 		p, err := Parse([]string{"core", verb, "--version", "untrusted-version", "--dry-run"}, nil, nil, nil)

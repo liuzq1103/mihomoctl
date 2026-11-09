@@ -40,7 +40,12 @@
   replacement already ran, the previous one when it never did. A foreign
   replacement that carries identical bytes is therefore refused
   (`transaction-current-drifted`) instead of being overwritten or deleted as if
-  it were the transaction's own file.
+  it were the transaction's own file. A rollback writes new objects, so the
+  journal names them before the rename as well: a rollback interrupted between
+  restoring a file and finishing leaves a journal that recognizes its own
+  restored object, and the recovery resumes the transaction instead of refusing
+  it forever. A foreign replacement carrying the restored bytes is still
+  refused after such an interruption.
 
 - Health checks report an evidence level (`confirmed`, `inferred`, `unavailable`)
   and a readable detail, skip listener and controller probes while the runtime is

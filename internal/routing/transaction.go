@@ -58,9 +58,12 @@ type txRecord struct {
 	// object this transaction published there. A content hash cannot tell
 	// the published object from a foreign replacement carrying identical
 	// bytes, so the recovery re-checks these identities before it undoes
-	// anything.
+	// anything. RestoredObject names the object a rollback published: a
+	// rollback writes a new object, and an interrupted rollback must stay
+	// recoverable.
 	PrevObject      string `json:"prev_object,omitempty"`
 	PublishedObject string `json:"published_object,omitempty"`
+	RestoredObject  string `json:"restored_object,omitempty"`
 }
 
 // fileTransaction is one durable multi-file mutation with rollback.
@@ -414,10 +417,11 @@ func (t *fileTransaction) commit() error {
 func (t *fileTransaction) rollback(finish bool) error {
 	var failures []string
 	for i := len(t.journal) - 1; i >= 0; i-- {
-		record := t.journal[i]
+		record := &t.journal[i]
 		restoreErr := t.undoRecord(record)
 		if restoreErr != nil {
 			failures = append(failures, fmt.Sprintf("%s (%v)", record.Path, restoreErr))
+			continue
 		}
 	}
 	if len(failures) > 0 {
@@ -438,7 +442,7 @@ func (t *fileTransaction) rollback(finish bool) error {
 	return nil
 }
 
-func (t *fileTransaction) undoRecord(record txRecord) (err error) {
+func (t *fileTransaction) undoRecord(record *txRecord) (err error) {
 	defer func() {
 		if recover() != nil {
 			err = errors.New("panic")
@@ -495,8 +499,13 @@ func fileTypeLabel(mode os.FileMode) string {
 	return "a non-regular file"
 }
 
-// restoreRecord puts back one backed-up file with its metadata.
-func (t *fileTransaction) restoreRecord(record txRecord) error {
+// restoreRecord puts back one backed-up file with its metadata. The
+// restored object is a NEW object, so its identity is journaled BEFORE the
+// rename: the journal entry is durable first and names the object the
+// rename will publish, so an interrupted rollback leaves a pending journal
+// that recognizes its own restored file instead of refusing it as a foreign
+// replacement.
+func (t *fileTransaction) restoreRecord(record *txRecord) error {
 	path := record.Path
 	if record.Type == "symlink" {
 		info, statErr := os.Lstat(path)
@@ -537,7 +546,16 @@ func (t *fileTransaction) restoreRecord(record txRecord) error {
 	}
 	mode := os.FileMode(0600)
 	fmt.Sscanf(record.Mode, "%o", &mode)
-	if err := txAtomicReplace(path, data, mode); err != nil {
+	temporary, object, err := txPrepareReplace(path, data, mode)
+	if err != nil {
+		return err
+	}
+	record.RestoredObject = object
+	if err := t.persist("pending"); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	if err := txCommitReplace(path, temporary); err != nil {
 		return err
 	}
 	return txRestoreOwnershipVerified(path, record.UID, record.GID)
@@ -800,6 +818,12 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 				digest := hashSHA256(current)
 				expected := map[string]bool{}
 				previousDigest := ""
+				// A rollback that was interrupted after restoring a file
+				// leaves the restored object at the path. Its identity is
+				// named by the journal entry, and its content is the
+				// backup of that entry, so it can be told apart from a
+				// foreign file that merely carries the same bytes.
+				restored := map[string]bool{}
 				for _, step := range tx.journal {
 					if step.Path == path {
 						if step.PublishedSHA256 != "" {
@@ -810,6 +834,9 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 								previous := hashSHA256(saved)
 								expected[previous] = true
 								previousDigest = previous
+								if step.RestoredObject != "" && previous == digest {
+									restored[step.RestoredObject] = true
+								}
 							}
 						}
 					}
@@ -821,11 +848,12 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 				// is still an object this transaction owns. The recorded
 				// content says which object belongs there: the published
 				// one when the replacement already ran, the previous one
-				// when it never did. The recorded identity must match, so
-				// a replacement carrying the same bytes is refused
+				// when it never did, the restored one when a rollback had
+				// already put the backup back. The recorded identity must
+				// match, so a replacement carrying the same bytes is refused
 				// instead of being undone as if it were our own file.
 				rec := latest[path]
-				if rec.PrevObject == "" && rec.PublishedObject == "" {
+				if rec.PrevObject == "" && rec.PublishedObject == "" && rec.RestoredObject == "" {
 					// A journal written before identities were recorded
 					// keeps the content-only preflight.
 					continue
@@ -842,6 +870,9 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 					// the two objects cannot be told apart by the bytes.
 					candidates[rec.PrevObject] = true
 					candidates[rec.PublishedObject] = true
+				}
+				for object := range restored {
+					candidates[object] = true
 				}
 				object, oerr := txObjectIdentity(path)
 				if oerr != nil || !candidates[object] {
