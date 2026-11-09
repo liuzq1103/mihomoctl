@@ -93,7 +93,14 @@
   would fail the inventory check for good. The staged tree is renamed out of
   the way before it is removed too, so an interruption during the rollback of
   a never-published installation resumes the same way instead of leaving a
-  partly deleted staged tree that no recovery could finish.
+  partly deleted staged tree that no recovery could finish. A filesystem that
+  cannot publish the launcher at all — it refuses hard links outright, with
+  `EOPNOTSUPP`, `EPERM`, `EXDEV` or the like — fails after the root is
+  already public, and every later recovery would retry the same impossible
+  link forever; such a publication is rolled back with
+  `bootstrap-launcher-link-unsupported` instead of wedging the scope, while
+  failures an operator can fix without a new installation (permissions,
+  space, a read-only mount) stay retryable with the journal retained.
 
 - Full program uninstall now quarantines the receipt-bound installation atomically,
   journals exact file ownership outside the program root, and resumes interrupted
@@ -165,7 +172,18 @@
   path the transaction created is not deleted. The ownership of every
   destination is verified before anything is undone, exactly as the backups
   are, so a foreign replacement of an earlier record cannot leave a mixed
-  old/new configuration behind after the later files were already restored. A rollback writes new objects, so the
+  old/new configuration behind after the later files were already restored.
+  The same preflight verifies the CONTENT of every destination against the
+  bytes the journal recorded, because an in-place edit of our own object
+  keeps its device and inode and is invisible to the identity check:
+  overwriting such an edit with the backup — or deleting the edited file on
+  a path the transaction created — would destroy a concurrent writer's
+  configuration change, so the rollback refuses (`rollback-failed`) and
+  retains its journal instead. The runtime's file transactions owe the
+  identical protection on their immediate rollback: every destination's
+  object AND content is verified before the first undo, and an in-place edit
+  is refused with `transaction-conflict` instead of being restored over or
+  deleted, the same rule the crash recovery already ran. A rollback writes new objects, so the
   journal names them before the rename as well: a rollback interrupted between
   restoring a file and finishing leaves a journal that recognizes its own
   restored object, and the recovery resumes the transaction instead of refusing

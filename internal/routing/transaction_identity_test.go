@@ -438,6 +438,95 @@ func TestLiveRollbackVerifiesEveryDestinationBeforeUndoing(t *testing.T) {
 	}
 }
 
+// TestLiveRollbackRefusesAnInPlaceEdit pins the content half of the live
+// preflight: an in-place edit of our own published object keeps its device
+// and inode, so no identity check can see it. The rollback must refuse
+// before it undoes anything — overwriting the edit with the backup would
+// destroy a concurrent writer's configuration change. The crash recovery
+// runs this same content rule; the live path owes the identical protection.
+func TestLiveRollbackRefusesAnInPlaceEdit(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	other := filepath.Join(scope.ConfigRoot, "mihomo", "other.yaml")
+	writeTxFile(t, target, "original", 0600)
+	writeTxFile(t, other, "stable", 0600)
+
+	tx, err := beginFileTransaction(scope, "test-inplace-edit", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(target, []byte("published"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(other, []byte("revised"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Another writer edits the FIRST-journaled file in place: the same
+	// object, different bytes. The reverse-order undo would restore `other`
+	// before it ever compared the edited file against the journal.
+	editInPlace(t, target, "edited in place")
+	if object, e := txObjectIdentity(target); e != nil || object != tx.journal[0].PublishedObject {
+		t.Fatal("the edit did not keep the published object's identity", e)
+	}
+
+	err = tx.rollback(true)
+	mustCode(t, err, "rollback-failed")
+	if readTxFile(t, target) != "edited in place" {
+		t.Fatal("the live rollback overwrote an in-place edit")
+	}
+	if readTxFile(t, other) != "revised" {
+		t.Fatal("the rollback restored a file before another one refused: a mixed configuration was published")
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 1 {
+		t.Fatalf("the failed rollback did not retain the journal: %v", entries)
+	}
+}
+
+// The same refusal protects a path the transaction created: the edited file
+// must not be deleted as if it were still the transaction's untouched
+// publication.
+func TestLiveRollbackRefusesAnInPlaceEditOnACreatedPath(t *testing.T) {
+	scope := txScope(t)
+	created := filepath.Join(scope.ConfigRoot, "mihomo", "created.yaml")
+
+	tx, err := beginFileTransaction(scope, "test-created-edit", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.writeBytes(created, []byte("created"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	editInPlace(t, created, "edited after creation")
+	if object, e := txObjectIdentity(created); e != nil || object != tx.journal[0].PublishedObject {
+		t.Fatal("the edit did not keep the created object's identity", e)
+	}
+
+	err = tx.rollback(true)
+	mustCode(t, err, "rollback-failed")
+	if readTxFile(t, created) != "edited after creation" {
+		t.Fatal("the live rollback deleted an in-place edit on the created path")
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 1 {
+		t.Fatalf("the failed rollback did not retain the journal: %v", entries)
+	}
+}
+
+// editInPlace rewrites a file's bytes through the same inode, the way an
+// editor or another writer that opened the path for writing would.
+func editInPlace(t *testing.T, path, content string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestTransactionRecoveryRefusesForeignObjectAfterInterruptedRollback pins
 // the other half of the same invariant: an interrupted rollback does not
 // open the door to a foreign replacement. A file that carries the restored

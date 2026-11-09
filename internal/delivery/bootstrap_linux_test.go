@@ -563,6 +563,64 @@ func TestPublishRollbackDetectsUnsupportedSystem(t *testing.T) {
 	}
 }
 
+// A filesystem that cannot publish a launcher at all — it refuses hard links
+// outright (EOPNOTSUPP, EPERM, EXDEV, ...) — fails AFTER the program root has
+// already been renamed into place. Retrying the same impossible link on
+// every later command would wedge the scope forever, so the publication is
+// rolled back instead: the journal names the published root, and the
+// abandonment removes exactly that. Errnos an operator can fix without a new
+// installation (EACCES, EIO) stay retryable and keep the journal.
+func TestBootstrapRollsBackWhenTheFilesystemRefusesHardLinks(t *testing.T) {
+	for _, e := range []error{syscall.ENOSYS, syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EPERM, syscall.EMLINK, syscall.EXDEV} {
+		code, ok := linkRollback(e)
+		if !ok || code != "bootstrap-launcher-link-unsupported" {
+			t.Fatal(e, code, ok)
+		}
+	}
+	if _, ok := linkRollback(syscall.EACCES); ok {
+		t.Fatal("a fixable permission failure was treated as an unsupported filesystem")
+	}
+	if _, ok := linkRollback(syscall.EEXIST); ok {
+		t.Fatal("a foreign destination was treated as an unsupported filesystem")
+	}
+	if _, ok := linkRollback(errors.New("unrelated")); ok {
+		t.Fatal("an unrelated failure was treated as an unsupported filesystem")
+	}
+
+	// The real recovery path: the root is already public when the launcher
+	// link fails with a permanent capability error.
+	a, source, bin := crashBootstrap(t, "root-published")
+	j, e := loadBootstrap(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	original := bootstrapLink
+	t.Cleanup(func() { bootstrapLink = original })
+	bootstrapLink = func(string, string) error { return syscall.EOPNOTSUPP }
+	e = recoverBootstrap(a)
+	var pe *platform.Error
+	if !errors.As(e, &pe) || pe.Code != "bootstrap-launcher-link-unsupported" {
+		t.Fatalf("recovery: %v", e)
+	}
+	// The real link is back before the fresh installation runs: only the
+	// first recovery was made to see the impossible filesystem.
+	bootstrapLink = original
+	if exists, e := optionalExists(bootstrapJournalPath(a)); e != nil || exists {
+		t.Fatal("journal retained", e)
+	}
+	if exists, e := optionalExists(j.Root); e != nil || exists {
+		t.Fatal("published root retained", e)
+	}
+	if exists, e := optionalExists(j.LauncherDir); e != nil || exists {
+		t.Fatal("staged launcher retained", e)
+	}
+	// The scope has to be usable again: a fresh installation succeeds.
+	publicInstallation(t, a, "install", source, bin)
+	if _, e := readReceipt(a); e != nil {
+		t.Fatal(e)
+	}
+}
+
 func TestBootstrapInterruptedRecoveryAndSharedMutation(t *testing.T) {
 	a, source, bin := crashBootstrap(t, "journal-published")
 	for _, phase := range []string{"root-published", "launcher-published", "launcher-stage-unlinked", "staging-cleaned"} {

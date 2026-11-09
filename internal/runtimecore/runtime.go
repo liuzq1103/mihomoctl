@@ -488,11 +488,51 @@ func verifyUndoObject(f fileSnapshot) error {
 	return platform.Usage("transaction-conflict")
 }
 
+// verifyUndoFiles checks every destination before the first undo, for the
+// same all-or-nothing reason the recovery preflights: the undo runs in
+// reverse, so an earlier record's refusal would otherwise be discovered only
+// after the later files were already restored, leaving a mixed configuration
+// behind. Beyond the recorded object identity, the bytes standing at each
+// path must be bytes the journal recorded: an in-place edit of our own
+// object keeps its device and inode, so the identity proof alone cannot see
+// it, and undoing it would overwrite the edit with Before — or delete the
+// edited file outright on a path the transaction created. The recovery runs
+// this same content rule in its own preflight.
+func verifyUndoFiles(a platform.App, j journal) error {
+	for _, f := range j.Files {
+		if e := verifyUndoObject(f); e != nil {
+			return e
+		}
+		info, e := os.Lstat(f.Path)
+		if e != nil {
+			if os.IsNotExist(e) {
+				continue
+			}
+			return e
+		}
+		if !info.Mode().IsRegular() {
+			// verifyUndoObject has already judged the object standing here.
+			continue
+		}
+		current, e := readManagedFile(a, f.Path)
+		if e != nil {
+			return e
+		}
+		if !bytesEqual(current, f.Before) && !bytesEqual(current, f.After) {
+			return platform.Usage("transaction-conflict")
+		}
+	}
+	return nil
+}
+
 // restoreFiles publishes the recorded original bytes. A rollback publishes a
 // NEW object, so the journal names it before the rename: a recovery that is
 // interrupted between the restore and the journal removal recognizes its own
 // work instead of refusing the transaction forever.
 func restoreFiles(a platform.App, j journal) error {
+	if e := verifyUndoFiles(a, j); e != nil {
+		return e
+	}
 	for i := len(j.Files) - 1; i >= 0; i-- {
 		f := j.Files[i]
 		if e := verifyUndoObject(f); e != nil {

@@ -476,17 +476,74 @@ func (t *fileTransaction) rollback(finish bool) error {
 }
 
 // verifyDestinations checks, before the first undo, that every destination
-// still holds an object the journal names — the same all-or-nothing preflight
-// the crash recovery runs. The per-record check inside the undo stays as the
-// second gate: an object can still be replaced while the rollback runs.
+// still holds an object the journal names and the bytes the journal recorded —
+// the same all-or-nothing preflight the crash recovery runs. The identity
+// check alone cannot see an in-place edit of our own object: the edit keeps
+// its device and inode, and the undo would overwrite it with the backup, or
+// delete the edited file outright on a path the transaction created. The
+// per-record identity check inside the undo stays as the second gate: an
+// object can still be replaced while the rollback runs.
 func (t *fileTransaction) verifyDestinations() error {
+	seen := map[string]bool{}
 	for i := range t.journal {
 		record := &t.journal[i]
 		if err := txUndoOwnership(record, t.pathObjects(record.Path)); err != nil {
 			return err
 		}
+		if seen[record.Path] {
+			continue
+		}
+		seen[record.Path] = true
+		info, err := os.Lstat(record.Path)
+		if err != nil || !info.Mode().IsRegular() {
+			// Nothing stands at the path, or the object there is not a
+			// regular file: the ownership check above has already judged it.
+			continue
+		}
+		current, err := os.ReadFile(record.Path)
+		if err != nil {
+			return fmt.Errorf("%s (%v)", record.Path, err)
+		}
+		expected, _ := t.expectedDigests(record.Path)
+		if !expected[hashSHA256(current)] {
+			return fmt.Errorf("%s (destination edited in place since the publication)", record.Path)
+		}
 	}
 	return nil
+}
+
+// expectedDigests collects every content digest the journal records for a
+// path: the bytes each publication wrote and the bytes each backup captured.
+// The second return value is the digest of the latest backup, which names the
+// content that stood at the path before the last publication.
+func (t *fileTransaction) expectedDigests(path string) (map[string]bool, string) {
+	expected := map[string]bool{}
+	previous := ""
+	for _, step := range t.journal {
+		if step.Path != path {
+			continue
+		}
+		if step.PublishedSHA256 != "" {
+			expected[step.PublishedSHA256] = true
+		}
+		if step.Backup != "" {
+			// The journal records the content it wrote into the backup, so a
+			// preflight compares the file at the path against a fact from the
+			// journal and not against whatever the backup file happens to
+			// contain now.
+			digest := step.BackupSHA256
+			if digest == "" {
+				if saved, err := os.ReadFile(step.Backup); err == nil {
+					digest = hashSHA256(saved)
+				}
+			}
+			if digest != "" {
+				expected[digest] = true
+				previous = digest
+			}
+		}
+	}
+	return expected, previous
 }
 
 // verifyBackups checks every backup the rollback would read, before the first
@@ -995,32 +1052,7 @@ func recoverTransactions(scope platform.Scope, system bool) error {
 					continue
 				}
 				digest := hashSHA256(current)
-				expected := map[string]bool{}
-				previousDigest := ""
-				for _, step := range tx.journal {
-					if step.Path == path {
-						if step.PublishedSHA256 != "" {
-							expected[step.PublishedSHA256] = true
-						}
-						if step.Backup != "" {
-							// The journal records the content it wrote into
-							// the backup, so the preflight compares the file
-							// at the path against a fact from the journal
-							// and not against whatever the backup file
-							// happens to contain now.
-							previous := step.BackupSHA256
-							if previous == "" {
-								if saved, err := os.ReadFile(step.Backup); err == nil {
-									previous = hashSHA256(saved)
-								}
-							}
-							if previous != "" {
-								expected[previous] = true
-								previousDigest = previous
-							}
-						}
-					}
-				}
+				expected, previousDigest := tx.expectedDigests(path)
 				if !expected[digest] {
 					return control("transaction-current-drifted", exitUnverify)
 				}

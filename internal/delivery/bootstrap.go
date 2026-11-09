@@ -280,7 +280,18 @@ func recoverBootstrapWithHooks(a platform.App, h bootstrapHooks) error {
 			return e
 		}
 		// Link is atomic and never replaces an existing destination.
-		if e = os.Link(lf, j.Receipt.BinPath); e != nil {
+		if e = bootstrapLink(lf, j.Receipt.BinPath); e != nil {
+			if code, ok := linkRollback(e); ok {
+				// This filesystem cannot publish a launcher at all. The root
+				// was already renamed into place, and the journal names it, so
+				// the publication is rolled back rather than leaving a
+				// journal whose every recovery retries the same impossible
+				// link on a root that is already public.
+				if re := abandonBootstrap(a, j); re != nil {
+					return re
+				}
+				return fail(code)
+			}
 			return e
 		}
 		if e = syncDir(filepath.Dir(j.Receipt.BinPath)); e != nil {
