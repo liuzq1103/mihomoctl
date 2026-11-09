@@ -285,6 +285,57 @@ func TestRemovalRefusesConfiguredCoreWithinProgram(t *testing.T) {
 	}
 }
 
+// The active configuration and the profile credentials are preserved by the
+// uninstall contract. A manager that points either of them into the program
+// tree would lose them with the deleted generation, so the removal is refused.
+func TestRemovalRefusesConfigurationWithinProgram(t *testing.T) {
+	for _, kind := range []string{"core-config", "profile-credentials"} {
+		t.Run(kind, func(t *testing.T) {
+			a, id := installed(t)
+			generation := filepath.Join(installRoot(a), "generations", id)
+			// A manifest-listed file of the generation: the manager may point at
+			// it, and the uninstall would delete it with the generation.
+			inside := filepath.Join(generation, "bin", "mihomoctl")
+			adopted := filepath.Join(a.Scope.DataRoot, "cores", "ci-reviewed", "mihomo")
+			manager := map[string]any{"core": map[string]any{"binary": adopted}}
+			if kind == "core-config" {
+				manager["core"].(map[string]any)["config"] = inside
+			} else {
+				manager["profiles"] = map[string]any{"default": map[string]any{"credentials_file": inside}}
+			}
+			if e := platform.WriteYAML(a.Scope.ManagerPath(), manager); e != nil {
+				t.Fatal(e)
+			}
+			for _, dry := range []bool{true, false} {
+				options := map[string][]string{}
+				if dry {
+					options["dry-run"] = []string{"true"}
+				}
+				doc, e := Run(context.Background(), a, platform.Request{Command: []string{"installation", "uninstall"}, Options: options})
+				if e == nil {
+					t.Fatal("configuration deletion reported success", doc)
+				}
+				refusal, ok := e.(*platform.Error)
+				if !ok || refusal.Code != "uninstall-config-inside-program-root" {
+					t.Fatalf("refusal = %v", e)
+				}
+			}
+			if _, e := os.Stat(inside); e != nil {
+				t.Fatal("preserved configuration removed", e)
+			}
+			if _, e := os.Stat(installRoot(a)); e != nil {
+				t.Fatal("program root removed after refusal", e)
+			}
+			if _, e := readReceipt(a); e != nil {
+				t.Fatal("launcher/receipt changed", e)
+			}
+			if _, e := os.Lstat(uninstallJournal(a)); !os.IsNotExist(e) {
+				t.Fatal("refusal wrote removal journal", e)
+			}
+		})
+	}
+}
+
 func TestCorruptInstallationStatusFails(t *testing.T) {
 	for _, kind := range []string{"receipt", "launcher", "current", "binary", "missing-receipt", "symlink-root", "foreign-file"} {
 		t.Run(kind, func(t *testing.T) {

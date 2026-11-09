@@ -4,8 +4,8 @@
   "version": "0.2.0",
   "kind": "differential-parity",
   "run": {
-    "started_at": "2026-11-09T03:24:40Z",
-    "run_directory": ".work/parity/20261109T032440Z",
+    "started_at": "2026-11-09T05:11:31Z",
+    "run_directory": ".work/parity/20261109T051131Z",
     "exit": 0,
     "overall": "PASS"
   },
@@ -16,8 +16,8 @@
     "archive_sha256": "4bd18a76841a86a3e239ff500da61057794f0adf92643b5a2932feacc67532ad"
   },
   "go": {
-    "source_sha256": "7667d2cc493ddfe6ed092ce20e78421106ba951daf1c22c008a3bfe60ede24a0",
-    "binary_sha256": "f7f8e677cc74d41144b1734c57d3ff7eae2874de9a53fbc991496ac657737a26",
+    "source_sha256": "3cee3493d3b9840ecaa03f5bf0f51f75c42c86b7fb0f39f1e0b5b84f88714d8d",
+    "binary_sha256": "b1a51fc78f1139fac816507a7d5aeee79732226e3b517215228183b16717abec",
     "source_sha256_scope": "Root *.go, go.mod, go.sum and internal/** non-test .go/.json/.yaml/.html, hashed with POSIX path separators. Recompute on Linux; a Windows recomputation differs only in the path separator.",
     "binary_sha256_scope": "go build -trimpath of the reviewed tree, so it is reproducible from the same source."
   },
@@ -52,8 +52,8 @@
     "test": {
       "status": "PASS",
       "exit": 0,
-      "seconds": 33.742,
-      "log": ".work/parity/20261109T032440Z/go-test.log",
+      "seconds": 55.352,
+      "log": ".work/parity/20261109T051131Z/go-test.log",
       "node_acceptance": [
         "internal/routing TestLinuxOverrideTrustedScriptEndToEnd",
         "internal/routing TestLinuxOverrideFlClashAdaptationEndToEnd"
@@ -65,8 +65,8 @@
     "vet": {
       "status": "PASS",
       "exit": 0,
-      "seconds": 11.308,
-      "log": ".work/parity/20261109T032440Z/go-vet.log"
+      "seconds": 15.675,
+      "log": ".work/parity/20261109T051131Z/go-vet.log"
     },
     "race": {
       "status": "UNAVAILABLE",

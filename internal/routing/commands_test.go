@@ -75,6 +75,7 @@ func itoa(n int) string {
 }
 
 func TestControllerTokenNeverEntersEnvelope(t *testing.T) {
+	skipUserScopeAsRoot(t)
 	f := newFixtureServer(t)
 	a, _ := fixtureScope(t, f)
 	// A non-terminal writer must be refused before the secret is printed.
@@ -92,6 +93,7 @@ func TestControllerTokenNeverEntersEnvelope(t *testing.T) {
 }
 
 func TestControllerInitializeIdempotent(t *testing.T) {
+	skipUserScopeAsRoot(t)
 	f := newFixtureServer(t)
 	a, configPath := fixtureScope(t, f)
 	configured := "external-controller: 127.0.0.1:" + itoa(f.port()) + "\n" +
@@ -182,6 +184,7 @@ func TestNodesListingKeepsProviderIdentities(t *testing.T) {
 }
 
 func TestGroupsSelectionChainAndAnnotations(t *testing.T) {
+	skipUserScopeAsRoot(t)
 	f := newFixtureServer(t)
 	a, _ := fixtureScope(t, f)
 	envelope := runRequest(t, a, []string{"groups"})
@@ -213,6 +216,7 @@ func TestGroupsSelectionChainAndAnnotations(t *testing.T) {
 }
 
 func TestSelectConfirmsAndReportsAffectedGroups(t *testing.T) {
+	skipUserScopeAsRoot(t)
 	f := newFixtureServer(t)
 	a, _ := fixtureScope(t, f)
 	envelope := runMutationRequest(t, a, []string{"select"}, "Proxy / 中文", "Node B")
@@ -237,6 +241,7 @@ func TestSelectConfirmsAndReportsAffectedGroups(t *testing.T) {
 }
 
 func TestSelectRejectsNonMemberNode(t *testing.T) {
+	skipUserScopeAsRoot(t)
 	f := newFixtureServer(t)
 	a, _ := fixtureScope(t, f)
 	envelope := runMutationRequest(t, a, []string{"select"}, "Auto", "Node B")
@@ -317,6 +322,7 @@ func TestConnectionsRedactHostsByDefault(t *testing.T) {
 }
 
 func TestModePatchAndConfirm(t *testing.T) {
+	skipUserScopeAsRoot(t)
 	f := newFixtureServer(t)
 	a, _ := fixtureScope(t, f)
 	envelope := runMutationRequest(t, a, []string{"mode"}, "direct")
@@ -348,6 +354,7 @@ func TestDNSQuery(t *testing.T) {
 }
 
 func TestProvidersListingAndRefresh(t *testing.T) {
+	skipUserScopeAsRoot(t)
 	f := newFixtureServer(t)
 	a, _ := fixtureScope(t, f)
 	envelope := runRequest(t, a, []string{"providers"})

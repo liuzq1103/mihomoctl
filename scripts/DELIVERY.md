@@ -54,6 +54,10 @@ For an independent core that survives program uninstall, use
 then explicitly init/adopt the returned path under managed `cores/` storage.
 Uninstall refuses a configured/adopted core inside program generations, preserves
 its executable and returns an actionable error; it never silently deletes that core.
+The same protection covers the active configuration and the profile credentials:
+a manager pointing `core.config` or a profile `credentials_file` into the program
+tree is refused with `uninstall-config-inside-program-root` instead of losing those
+files with the deleted generation.
 
 Check a bundle with `go run ./scripts/verifyrelease -archive BUNDLE -sha256 REVIEWED_HASH`.
 Use `-execute` only for explicitly reviewed native inputs; this verifies actual CLI

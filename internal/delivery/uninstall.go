@@ -336,20 +336,45 @@ func removalLauncherOwned(j removalJournal) (bool, error) {
 	return true, nil
 }
 
+// protectConfiguredCore refuses the uninstall when a file the active
+// configuration depends on lives inside the program tree the uninstall
+// deletes. The core binary, the active configuration and the profile
+// credentials are all preserved by contract, so their location decides whether
+// the removal may proceed at all.
 func protectConfiguredCore(a platform.App, roots ...string) error {
-	refuseInside := func(p string) error {
+	refuse := func(code, detail, p string) error {
 		for _, root := range roots {
 			if p != "" && within(root, p) {
-				return &platform.Error{Code: "uninstall-core-inside-program-root", Exit: 1,
-					Detail: "Install and explicitly adopt a core under managed cores storage before removing the program. The configured or running core was preserved."}
+				return &platform.Error{Code: code, Exit: 1, Detail: detail}
 			}
 		}
 		return nil
 	}
+	refuseCore := func(p string) error {
+		return refuse("uninstall-core-inside-program-root", "Install and explicitly adopt a core under managed cores storage before removing the program. The configured or running core was preserved.", p)
+	}
+	refuseConfig := func(p string) error {
+		return refuse("uninstall-config-inside-program-root", "The active configuration or profile credentials live inside the managed program tree. Move them to the retained configuration storage before removing the program. They were preserved.", p)
+	}
 	if m, e := a.LoadManager(); e == nil {
-		p := platform.String(platform.Map(m["core"])["binary"])
-		if e := refuseInside(p); e != nil {
+		core := platform.Map(m["core"])
+		if e := refuseCore(platform.String(core["binary"])); e != nil {
 			return e
+		}
+		if e := refuseConfig(platform.String(core["config"])); e != nil {
+			return e
+		}
+		profiles := platform.Map(m["profiles"])
+		names := make([]string, 0, len(profiles))
+		for name := range profiles {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			profile := platform.Map(profiles[name])
+			if e := refuseConfig(platform.String(profile["credentials_file"])); e != nil {
+				return e
+			}
 		}
 	} else if exists, se := optionalExists(a.Scope.ManagerPath()); se != nil || exists {
 		return fail("uninstall-manager-unverified")
@@ -369,7 +394,7 @@ func protectConfiguredCore(a platform.App, roots ...string) error {
 		if p == "" || !filepath.IsAbs(p) {
 			return fail("uninstall-runtime-state-unverified")
 		}
-		if e = refuseInside(p); e != nil {
+		if e = refuseCore(p); e != nil {
 			return e
 		}
 	}

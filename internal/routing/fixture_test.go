@@ -31,12 +31,13 @@ var fixtureRows = map[string]any{
 // fixtureServer reproduces the original tests' loopback controller: bearer
 // auth, ordered proxy table, streaming traffic, and the redirect default.
 type fixtureServer struct {
-	server *httptest.Server
-	mu     sync.Mutex
-	rows   map[string]any
-	puts   int
-	patch  map[string]any
-	mode   string
+	server       *httptest.Server
+	listenerFile *os.File
+	mu           sync.Mutex
+	rows         map[string]any
+	puts         int
+	patch        map[string]any
+	mode         string
 }
 
 func newFixtureServer(t *testing.T) *fixtureServer {
@@ -112,8 +113,18 @@ func newFixtureServer(t *testing.T) *fixtureServer {
 			w.WriteHeader(http.StatusFound)
 		}
 	}))
-	f.server = httptest.NewServer(mux)
+	f.server = httptest.NewUnstartedServer(mux)
+	// The loopback listener is created from a raw socket on Linux so the
+	// fixture owns the file descriptor it hands to the helper core process.
+	if l, file := fixtureControllerListener(t); l != nil {
+		f.server.Listener = l
+		f.listenerFile = file
+	}
+	f.server.Start()
 	t.Cleanup(f.server.Close)
+	if f.listenerFile != nil {
+		t.Cleanup(func() { _ = f.listenerFile.Close() })
+	}
 	return f
 }
 
@@ -158,7 +169,7 @@ func fixtureScope(t *testing.T, f *fixtureServer) (platform.App, string) {
 		t.Fatal(err)
 	}
 	app := platform.App{Scope: scope}
-	binary := fixtureRuntimeBinary(t, app, configPath)
+	binary := fixtureRuntimeBinary(t, app, configPath, f)
 	manager := "version: 1\ncore:\n  binary: " + binary + "\n  config: " + configPath + "\n  backend: process\n"
 	if err := platform.AtomicWrite(scope.ManagerPath(), []byte(manager), 0600); err != nil {
 		t.Fatal(err)

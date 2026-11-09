@@ -9,6 +9,13 @@ if [ "$expected" = amd64 ]; then
     race_flag=-race
 else
     echo 'arm64 QEMU: ThreadSanitizer VMA layout is unsupported; race testing is NOT executed here. amd64 CI supplies race coverage.' >&2
+    # The emulated process group carries no stable kernel start time, so the
+    # /proc ownership proof cannot bind to a process identity under emulation.
+    # The tests that are about that proof are skipped here and are covered by
+    # the native amd64 job; the gate states the gap instead of hiding it.
+    MIHOMOCTL_GO_TEST_EMULATED=1
+    export MIHOMOCTL_GO_TEST_EMULATED
+    echo 'arm64 QEMU: the emulated kernel exposes no stable process identity; the kernel ownership proof is NOT exercised here. amd64 CI supplies that coverage.' >&2
 fi
 go vet ./...
 go build -o /tmp/mihomoctl-go-ci .

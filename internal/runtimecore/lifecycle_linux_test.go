@@ -275,6 +275,7 @@ func TestNativeLifecycleAndAuthentication(t *testing.T) {
 	}
 }
 func TestOwnershipRejectsForeignProcess(t *testing.T) {
+	skipEmulatedKernel(t)
 	a := initializedApp(t)
 	m, e := loadManager(a)
 	if e != nil {
@@ -295,6 +296,7 @@ func TestOwnershipRejectsForeignProcess(t *testing.T) {
 	}
 }
 func TestSocketOwnershipAndPIDIdentity(t *testing.T) {
+	skipEmulatedKernel(t)
 	id, e := inspectIdentity(os.Getpid())
 	if e != nil {
 		t.Fatal(e)
@@ -453,6 +455,7 @@ func TestDirectExecPreservesExitAndSignal(t *testing.T) {
 }
 
 func TestGeneratedPortCollisionRetriesOnlyPristineConfig(t *testing.T) {
+	skipEmulatedKernel(t)
 	a := initializedApp(t)
 	x, e := resolve(a, "")
 	if e != nil {
@@ -563,6 +566,7 @@ func TestResetRepairsStoppedMalformedConfig(t *testing.T) {
 	}
 }
 func TestHealthRejectsAnonymousProxyAndController(t *testing.T) {
+	skipEmulatedKernel(t)
 	a := testApp(t)
 	id, e := inspectIdentity(os.Getpid())
 	if e != nil {

@@ -446,10 +446,14 @@ func (f *privilegedFixture) createUser(t *testing.T, index int) privilegedUser {
 		}
 	}
 	home := "/home/" + name
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if _, e := ciCommand(ctx, "useradd", "--uid", strconv.Itoa(uid), "--create-home", "--home-dir", home, "--shell", "/bin/bash", name); e != nil {
-		t.Fatal("cannot create disposable UID", e)
+	// useradd resolves NSS groups and copies /etc/skel before the account
+	// exists; a slow NSS backend or cold page cache must not be mistaken for
+	// a fixture failure. The combined output names the step that blocked.
+	addCtx, addCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer addCancel()
+	out, e := ciCommand(addCtx, "useradd", "--uid", strconv.Itoa(uid), "--create-home", "--home-dir", home, "--shell", "/bin/bash", name)
+	if e != nil {
+		t.Fatalf("cannot create disposable UID: %v output=%q", e, string(out))
 	}
 	entry, e := user.Lookup(name)
 	if e != nil {
@@ -469,7 +473,12 @@ func (f *privilegedFixture) createUser(t *testing.T, index int) privilegedUser {
 	if e != nil {
 		t.Fatal(e)
 	}
-	cmd := exec.CommandContext(ctx, "chpasswd")
+	// chpasswd gets its own deadline: a slow useradd must not consume it.
+	pwCtx, pwCancel := context.WithTimeout(context.Background(), time.Minute)
+	defer pwCancel()
+	cmd := exec.CommandContext(pwCtx, "chpasswd")
+	cmd.Env = cleanEnvironment(true, nil)
+	cmd.Dir = "/"
 	cmd.Stdin = strings.NewReader(name + ":" + password + "\n")
 	if e = cmd.Run(); e != nil {
 		t.Fatal("cannot unlock disposable account for public-key SSH", e)

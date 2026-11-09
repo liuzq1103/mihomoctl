@@ -64,7 +64,7 @@ mihomoctl release check --json
 
 安装拒绝覆盖已有外来命令。更新要求受管安装收据，验证清单后原子切换程序版本，并保留活动核心。在线 `release fetch` 和 `update --latest` 必须提供独立审阅的 `--sha256`，`--kind basic|offline` 选择包种类；远程未签名摘要和 API 元数据本身不建立信任。离线核心可用 `core install --version v1.19.33 --asset /absolute/path/to/reviewed/core.gz` 暂存，随后显式 `core adopt --path /absolute/path/to/independent/core` 激活。
 
-`installation uninstall` 只移除收据所属的启动器和程序安装树，保留配置、独立核心与运行状态。若配置或记录中的运行核心位于程序安装树内，卸载会拒绝；请先安装并采用独立核心。卸载恢复使用收据绑定的隔离目录，拒绝外来文件与内容漂移。`installation recover` 用于完成待处理事务；不要把它当成历史版本回滚。`rollback` 明确返回不支持。Python 的 wheel、wheelhouse、extras、解释器选择和旧配置导入不属于本项目，相关参数或迁移行为被拒绝。
+`installation uninstall` 只移除收据所属的启动器和程序安装树，保留配置、独立核心与运行状态。若配置或记录中的运行核心位于程序安装树内，卸载会拒绝；请先安装并采用独立核心。管理文档把活动配置或档案凭据指到程序安装树内同样会被拒绝，因为这些文件必须保留。卸载恢复使用收据绑定的隔离目录，拒绝外来文件与内容漂移。`installation recover` 用于完成待处理事务；不要把它当成历史版本回滚。`rollback` 明确返回不支持。Python 的 wheel、wheelhouse、extras、解释器选择和旧配置导入不属于本项目，相关参数或迁移行为被拒绝。
 
 ## 验证与发布状态
 

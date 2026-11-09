@@ -120,6 +120,7 @@ func withTerminalOutput(t *testing.T) {
 // TestControllerTokenRefusesJSONBeforeAnyOutput is the disclosure fix: with
 // --json requested the raw token never reaches the writer, terminal or not.
 func TestControllerTokenRefusesJSONBeforeAnyOutput(t *testing.T) {
+	skipUserScopeAsRoot(t)
 	f := newFixtureServer(t)
 	a, _ := fixtureScope(t, f)
 
@@ -154,6 +155,7 @@ func TestControllerTokenRefusesJSONBeforeAnyOutput(t *testing.T) {
 // honest: a real terminal without --json still gets the raw token, and the
 // envelope still carries only the placeholder.
 func TestControllerTokenWritesOnlyToPrivateTerminal(t *testing.T) {
+	skipUserScopeAsRoot(t)
 	f := newFixtureServer(t)
 	a, _ := fixtureScope(t, f)
 	withTerminalOutput(t)

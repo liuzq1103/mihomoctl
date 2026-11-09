@@ -22,7 +22,10 @@
   of being deleted as program-owned. It is idempotent and permits
   reinstall. Corrupt status fails; only true absence reports not-installed.
   Configuration and independent cores remain; uninstall refuses configured cores
-  located inside program generations.
+  located inside program generations, and equally refuses a manager that points
+  the active configuration or profile credentials into the program tree
+  (`uninstall-config-inside-program-root`) instead of deleting them with the
+  generation.
 
 - Configuration file transactions preflight the type of every journalled
   destination before the first undo. A path replaced by a directory, FIFO, socket
