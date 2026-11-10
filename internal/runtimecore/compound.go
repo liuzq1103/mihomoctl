@@ -642,8 +642,16 @@ func restoreCompoundFile(a platform.App, index int) error {
 	// they were written with: a record from that era cannot tell its own
 	// objects from foreign ones, so it falls back to its content check alone.
 	if c.Version >= 2 {
-		if object, oe := platform.ObjectIdentity(f.Path); oe == nil &&
-			object != f.PublishedObject && object != f.PrevObject && object != f.RestoredObject {
+		object, oe := undoObjectIdentity(f.Path)
+		if oe != nil && !os.IsNotExist(oe) {
+			// An object that cannot be observed is not an owned object: the
+			// restore fails closed and keeps its journal instead of deleting
+			// or overwriting whatever stands at the path. The preflight has
+			// already run, so this is the last look before the undo, and a
+			// filesystem error here is not a verdict that the path is ours.
+			return oe
+		}
+		if oe == nil && object != f.PublishedObject && object != f.PrevObject && object != f.RestoredObject {
 			if !f.Existed {
 				return platform.Usage("compound-file-conflict")
 			}
@@ -660,7 +668,11 @@ func restoreCompoundFile(a platform.App, index int) error {
 		return publishFile(a, f.Path, f.Before, true)
 	}
 	if f.RestoredObject != "" {
-		if object, oe := platform.ObjectIdentity(f.Path); oe == nil && object == f.RestoredObject {
+		object, oe := undoObjectIdentity(f.Path)
+		if oe != nil && !os.IsNotExist(oe) {
+			return oe
+		}
+		if oe == nil && object == f.RestoredObject {
 			// The restore already published this object. Publishing a
 			// second one would overwrite the only record of the first.
 			return nil

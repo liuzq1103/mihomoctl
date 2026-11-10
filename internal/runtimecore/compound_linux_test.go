@@ -339,6 +339,71 @@ func TestCompoundRecoveryRefusesForeignReplacementAfterUnboundPublication(t *tes
 	}
 }
 
+// An object that cannot be observed at the moment of the undo is not an
+// owned object. The compound restore runs after the preflight has verified
+// every destination, so a replacement that lands in between is caught by the
+// restore's own identity gate — unless the observation itself fails, which
+// must fail closed and keep the journal instead of deleting or overwriting
+// whatever stands at the path.
+func TestCompoundRestoreFailsClosedWhenIdentityIsUnobservable(t *testing.T) {
+	a := initializedApp(t)
+	if _, e := Run(context.Background(), a, platform.Request{Command: []string{"start"}}); e != nil {
+		t.Fatal(e)
+	}
+	candidate := replacementCore(t, a)
+	crashAt(t, crashSpec{App: a, Request: platform.Request{Command: []string{"core", "adopt"}, Options: map[string][]string{"path": {candidate}}}, Phase: "files-publishing"})
+	crashAt(t, crashSpec{App: a, Recover: true, Phase: "transaction-discarded"})
+	managed := a.Scope.ManagerPath()
+	raw, e := platform.ReadPrivate(managed)
+	if e != nil {
+		t.Fatal(e)
+	}
+	original := undoObjectIdentity
+	t.Cleanup(func() { undoObjectIdentity = original })
+	var foreign string
+	undoObjectIdentity = func(p string) (string, error) {
+		if p != managed {
+			return original(p)
+		}
+		if foreign == "" {
+			// The replacement lands between the preflight and the undo
+			// probe, and the probe itself cannot observe it. The restore
+			// walks the journal in reverse, so other files are observed
+			// normally before the managed configuration's turn comes.
+			side := p + ".foreign"
+			if e = os.WriteFile(side, raw, 0600); e != nil {
+				t.Fatal(e)
+			}
+			if e = os.Rename(side, p); e != nil {
+				t.Fatal(e)
+			}
+			foreign, e = platform.ObjectIdentity(p)
+			if e != nil {
+				t.Fatal(e)
+			}
+		}
+		return "", &os.PathError{Op: "lstat", Path: p, Err: syscall.EIO}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	e = platform.WithLock(ctx, a.Scope, func() error { return recoverCompound(ctx, a) })
+	if e == nil {
+		t.Fatal("the restore proceeded over an unobservable object")
+	}
+	if object, oe := platform.ObjectIdentity(managed); oe != nil || object != foreign {
+		t.Fatal("the unobservable object was replaced or left unbound", oe)
+	}
+	if _, oe := os.Lstat(compoundPath(a)); oe != nil {
+		t.Fatal("the refused restore lost its journal", oe)
+	}
+	// With the observation restored, the same journal refuses on the
+	// verdict: the failed observation was the only thing standing between
+	// the foreign object and the overwrite.
+	undoObjectIdentity = original
+	e = platform.WithLock(ctx, a.Scope, func() error { return recoverCompound(ctx, a) })
+	requireCode(t, e, "compound-file-conflict")
+}
+
 // A crash before the file transaction records the objects it is about to
 // publish leaves the compound journal naming only the objects it replaced.
 // A foreign replacement that carries identical bytes is a different object,

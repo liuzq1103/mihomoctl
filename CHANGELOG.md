@@ -50,7 +50,12 @@
   before undoing it; the immediate rollback that runs in-process when a later
   publication fails now refuses a path whose object the journal does not name
   (`transaction-conflict`) instead of overwriting or removing whatever stands
-  there — including a path the transaction created. Records written before
+  there — including a path the transaction created. The compound restore's own
+  identity gate — the last look before the undo, after the preflight has
+  already passed — fails closed when the object cannot be observed: a
+  filesystem error keeps the journal and touches nothing, instead of skipping
+  the gate and deleting or overwriting an unproven object that a replacement
+  may have just placed on the path. Records written before
   identities were journaled keep the guarantee they were written with.
 
 - An installation published by the previous protocol is still recognized as

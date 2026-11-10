@@ -245,6 +245,11 @@ func applyFiles(a platform.App, files map[string][]byte) error {
 // replaces. It is a variable so a test can make that one observation fail.
 var captureObjectIdentity = platform.ObjectIdentity
 
+// undoObjectIdentity observes the object standing at a path a rollback is
+// about to undo. It is a variable so a test can make that one observation
+// fail after the preflight has already passed.
+var undoObjectIdentity = platform.ObjectIdentity
+
 func applyFilesBinding(a platform.App, files map[string][]byte) (map[string]string, error) {
 	published := map[string]string{}
 	if e := platform.CheckPath(journalPath(a)); e != nil {
@@ -557,7 +562,11 @@ func restoreFiles(a platform.App, j journal) error {
 			continue
 		}
 		if f.RestoredObject != "" {
-			if object, oe := platform.ObjectIdentity(f.Path); oe == nil && object == f.RestoredObject {
+			object, oe := undoObjectIdentity(f.Path)
+			if oe != nil && !os.IsNotExist(oe) {
+				return oe
+			}
+			if oe == nil && object == f.RestoredObject {
 				// The restore already published this object. Publishing a
 				// second one would overwrite the only record of the first.
 				continue
