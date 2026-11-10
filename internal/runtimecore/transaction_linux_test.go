@@ -5,6 +5,7 @@ package runtimecore
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/liuzq1103/mihomoctl/internal/platform"
@@ -176,6 +177,54 @@ func editInPlaceRuntime(t *testing.T, path string, content []byte) {
 	}
 	if e = f.Close(); e != nil {
 		t.Fatal(e)
+	}
+}
+
+// The snapshot loop binds the object it replaces with the same fail-closed
+// rule as every other observation: a transient failure refuses the whole
+// publication before the journal is written. Swallowing it would name the
+// publication while leaving the object it replaces unnamed, and a crash in
+// that window would wedge the recovery on the intact original forever.
+func TestSnapshotIdentityFailureRefusesThePublication(t *testing.T) {
+	a := initializedApp(t)
+	target := a.Scope.ManagerPath()
+	before := []byte("original content")
+	if e := platform.AtomicWrite(target, before, 0600); e != nil {
+		t.Fatal(e)
+	}
+	original := captureObjectIdentity
+	t.Cleanup(func() { captureObjectIdentity = original })
+	captureObjectIdentity = func(string) (string, error) {
+		return "", &os.PathError{Op: "lstat", Path: target, Err: syscall.EIO}
+	}
+	_, e := applyFilesBinding(a, map[string][]byte{target: []byte("published")})
+	if e == nil {
+		t.Fatal("the publication was accepted with an unobservable identity")
+	}
+	captureObjectIdentity = original
+	if _, re := os.Lstat(journalPath(a)); !os.IsNotExist(re) {
+		t.Fatal("a journal was written for a refused publication", re)
+	}
+	if raw, re := platform.ReadPrivate(target); re != nil || !bytesEqual(raw, before) {
+		t.Fatal("the untouched original was modified", re)
+	}
+}
+
+// The compound snapshot refuses identically: no half-identified record.
+func TestCompoundSnapshotIdentityFailureRefuses(t *testing.T) {
+	a := initializedApp(t)
+	target := a.Scope.ManagerPath()
+	if e := platform.AtomicWrite(target, []byte("original"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	original := captureObjectIdentity
+	t.Cleanup(func() { captureObjectIdentity = original })
+	captureObjectIdentity = func(string) (string, error) {
+		return "", &os.PathError{Op: "lstat", Path: target, Err: syscall.EIO}
+	}
+	_, e := snapshotCompoundFile(a, target, []byte("published"))
+	if e == nil {
+		t.Fatal("the compound snapshot accepted an unobservable identity")
 	}
 }
 

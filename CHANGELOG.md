@@ -156,7 +156,13 @@
   A failed write aborts before the rename, so a truncated file is never published.
   The journal also binds every destination by device and inode, and the recorded
   content decides which object belongs at the path — the published one when the
-  replacement already ran, the previous one when it never did. A foreign
+  replacement already ran, the previous one when it never did. Capturing that
+  identity is an observation like any other: a filesystem error during the
+  capture fails the publication before anything is journaled, instead of
+  writing a record that names the object it will publish but not the object it
+  replaces — a crash before the rename in that state would leave a recovery
+  that refuses the intact original on every retry. The runtime's file and
+  compound snapshot captures refuse identically. A foreign
   replacement that carries identical bytes is therefore refused
   (`transaction-current-drifted`) instead of being overwritten or deleted as if
   it were the transaction's own file. A transaction that publishes the same

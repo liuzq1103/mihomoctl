@@ -221,8 +221,12 @@ func (t *fileTransaction) stage(data []byte, mode os.FileMode) (string, error) {
 	return path, nil
 }
 
-// captureMetadata records type and permission bits; ownership is recorded
-// where the platform exposes it.
+// txCaptureIdentity captures the identity of the object a record replaces.
+// It is a variable so a test can make that one observation fail.
+var txCaptureIdentity = txObjectIdentity
+
+// captureMetadata records what stood at the path before the transaction
+// replaces it, with every fact the platform exposes.
 func (t *fileTransaction) captureMetadata(record *txRecord, path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -245,7 +249,14 @@ func (t *fileTransaction) captureMetadata(record *txRecord, path string) error {
 	default:
 		return control("refuse-unusual-file", exitUnverify)
 	}
-	if object, err := txObjectIdentity(path); err == nil {
+	if object, err := txCaptureIdentity(path); err != nil {
+		// A failed observation must not journal a half-identified record:
+		// the publication object would be named while the object it
+		// replaces is not, and a crash before the rename would leave a
+		// recovery that refuses the intact original on every retry. Failing
+		// here publishes nothing and journals nothing.
+		return controllerFileError(err)
+	} else if object != "" {
 		record.PrevObject = object
 	}
 	return nil

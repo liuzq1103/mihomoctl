@@ -511,6 +511,46 @@ func TestLiveRollbackRefusesAnInPlaceEditOnACreatedPath(t *testing.T) {
 	}
 }
 
+// The identity of the object a record replaces is captured with the same
+// fail-closed rule as every other observation: a transient failure refuses
+// the publication BEFORE anything is journaled. Swallowing it would write a
+// record that names the object it will publish but not the object it
+// replaces, and a crash before the rename would leave a recovery that
+// refuses the intact original on every retry.
+func TestCaptureIdentityFailureRefusesThePublication(t *testing.T) {
+	scope := txScope(t)
+	target := filepath.Join(scope.ConfigRoot, "mihomo", "config.yaml")
+	writeTxFile(t, target, "original", 0600)
+
+	tx, err := beginFileTransaction(scope, "test-capture-fail", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := txCaptureIdentity
+	t.Cleanup(func() { txCaptureIdentity = original })
+	txCaptureIdentity = func(string) (string, error) {
+		return "", fmt.Errorf("identity observation failed")
+	}
+	if err := tx.writeBytes(target, []byte("published"), 0600); err == nil {
+		t.Fatal("the publication was accepted with an unobservable identity")
+	}
+	txCaptureIdentity = original
+	if len(tx.journal) != 0 {
+		t.Fatalf("a half-identified record was journaled: %+v", tx.journal)
+	}
+	// The caller's contract on failure is the rollback: over zero records
+	// it must finish cleanly and leave nothing behind.
+	if err := tx.rollback(true); err != nil {
+		t.Fatalf("the empty transaction did not roll back: %v", err)
+	}
+	if readTxFile(t, target) != "original" {
+		t.Fatal("the untouched original was modified")
+	}
+	if entries := backupsEntries(t, scope); len(entries) != 0 {
+		t.Fatalf("a journal was retained: %v", entries)
+	}
+}
+
 // editInPlace rewrites a file's bytes through the same inode, the way an
 // editor or another writer that opened the path for writing would.
 func editInPlace(t *testing.T, path, content string) {

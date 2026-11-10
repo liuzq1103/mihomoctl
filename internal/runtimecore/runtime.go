@@ -241,6 +241,10 @@ func applyFiles(a platform.App, files map[string][]byte) error {
 // journal is gone. The binding runs for every transaction, not only for the
 // compound ones, because a compound operation publishes files through
 // transactions of its own.
+// captureObjectIdentity captures the identity of the object a snapshot
+// replaces. It is a variable so a test can make that one observation fail.
+var captureObjectIdentity = platform.ObjectIdentity
+
 func applyFilesBinding(a platform.App, files map[string][]byte) (map[string]string, error) {
 	published := map[string]string{}
 	if e := platform.CheckPath(journalPath(a)); e != nil {
@@ -277,10 +281,16 @@ func applyFilesBinding(a platform.App, files map[string][]byte) (map[string]stri
 			v.Before = b
 			v.Existed = true
 			// The object that stood at the path is bound here, so the
-			// recovery can tell it from a foreign replacement.
-			if object, oe := platform.ObjectIdentity(p); oe == nil {
-				v.PrevObject = object
+			// recovery can tell it from a foreign replacement. A failed
+			// observation must not journal a half-identified record: the
+			// publication object would be named while the object it
+			// replaces is not, and a crash before the rename would leave a
+			// recovery that refuses the intact original forever.
+			object, oe := captureObjectIdentity(p)
+			if oe != nil {
+				return nil, oe
 			}
+			v.PrevObject = object
 		} else if !os.IsNotExist(e) {
 			return nil, e
 		}

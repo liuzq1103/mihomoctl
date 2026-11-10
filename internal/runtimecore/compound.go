@@ -173,9 +173,15 @@ func snapshotCompoundFile(a platform.App, p string, after []byte) (compoundFile,
 			return f, e
 		}
 		f.Existed = true
-		if object, oe := platform.ObjectIdentity(p); oe == nil {
-			f.PrevObject = object
+		// A failed observation must not journal a half-identified record:
+		// the published version is named while the object it replaces is
+		// not, and a recovery in that window would refuse the intact
+		// original forever.
+		object, oe := captureObjectIdentity(p)
+		if oe != nil {
+			return f, oe
 		}
+		f.PrevObject = object
 	} else if !os.IsNotExist(e) {
 		return f, e
 	}
